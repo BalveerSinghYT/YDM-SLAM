@@ -43,7 +43,7 @@ add_definitions(-w)
 LIST(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_modules)
 
 # Set the ONNXRUNTIME_DIR
-SET (ONNXRUNTIME_DIR /media/veer/Softwares/Dissertation2/onnxruntime-linux-x64-gpu-1.9.0)
+SET (ONNXRUNTIME_DIR <path_to_onnxruntime>)     # Set the path to the ONNX Runtime directory
 
 # Find OpenCV
 find_package(OpenCV 4.2)
