@@ -1,6 +1,6 @@
-# YDM-SLAM: YOLOv8-powered Dynamic Mapping with ORB-SLAM3
+# YDM-SLAM: YOLOv8-powered Dynamic Mapping of Environment with ORB-SLAM3
 
-**This is an improved version of [ORB-SLAM3](https://github.com/UZ-SLAMLab/ORB_SLAM3) that adds an semantic mask based object detection segmentaiton module implemented with [YOLOv8-Seg](https://docs.ultralytics.com/tasks/segment/) to achieve SLAM in dynamic environments.**
+**This is an improved version of [ORB-SLAM3](https://github.com/UZ-SLAMLab/ORB_SLAM3) that adds an semantic mask-based object detection segmentation module implemented with [YOLOv8-Seg](https://docs.ultralytics.com/tasks/segment/) to achieve SLAM in dynamic environments.**
 - Object Detection
 - Instance Segmentation
 - Dynamic SLAM
@@ -28,7 +28,7 @@ We have tested on:
 You can download the compatible version of onnx-runtime from [Microsoft ONNX-Runtime](https://github.com/microsoft/onnxruntime/releases/)
 We tested on onnxruntime-linux-x64-gpu-1.9.0
 
-then extract the folder using below command to Thirdparty folder and update <path_to_onnxruntime> in CMakeLists.txt
+then extract the folder using the below command to third-party folder and update <path_to_onnxruntime> in CMakeLists.txt
 ```bash
 tar -xzvf onnxruntime-linux-x64-gpu-1.9.0.tgz -C PATH/YDM-SLAM/Thirdparty
 ```
