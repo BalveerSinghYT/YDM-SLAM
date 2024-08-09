@@ -50,3 +50,7 @@ Download any dynamic sequence from [TUM-RGBD dataset](https://cvg.cit.tum.de/dat
 ```bash
 ./Examples/RGB-D/rgbd_tum Vocabulary/ORBvoc.txt Examples/RGB-D/TUMX.yaml PATH_TO_SEQUENCE_FOLDER ASSOCIATIONS_FILE
 ```
+
+## 4. Demo
+[![Watch the Demo Video Here](https://github.com/user-attachments/assets/91f1dc26-fd0d-4b2b-8218-9372cc1c0ee7)](https://youtu.be/J7V5pD78oNM)
+
