@@ -5,6 +5,9 @@
 - Instance Segmentation
 - Dynamic SLAM
 
+# Publication
+https://ieeexplore.ieee.org/abstract/document/10691024
+
 # Getting Started
 
 ## 0. Prerequisites
