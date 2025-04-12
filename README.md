@@ -8,6 +8,18 @@
 # Publication
 https://ieeexplore.ieee.org/abstract/document/10691024
 
+# Cite our Work
+```
+@inproceedings{singh2024ydm,
+  title={YDM-SLAM: YOLOv8-Powered Dynamic Mapping of Environment Using ORB-SLAM3},
+  author={Singh, Balveer and Kumar, Puneet and Kaur, Narinder},
+  booktitle={2024 International Conference on Data Science and Network Security (ICDSNS)},
+  pages={01--07},
+  year={2024},
+  organization={IEEE}
+}
+```
+
 # Getting Started
 
 ## 0. Prerequisites
