@@ -43,7 +43,7 @@ add_definitions(-w)
 LIST(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_modules)
 
 # Set the ONNXRUNTIME_DIR
-SET (ONNXRUNTIME_DIR /home/max/DynamicSLAM/YDM-SLAM/Thirdparty/onnxruntime-linux-x64-gpu-1.9.0)     # Set the path to the ONNX Runtime directory
+SET (ONNXRUNTIME_DIR /home/max/DynamicSLAM/YOLOv8-ORBSLAM/Thirdparty/onnxruntime-linux-x64-gpu-1.9.0)     # Set the path to the ONNX Runtime directory
 
 # Find OpenCV
 find_package(OpenCV 4.2)
@@ -59,6 +59,7 @@ MESSAGE(${OpenCV_VERSION})
 find_package(Eigen3 3.1.0 REQUIRED)
 find_package(Pangolin REQUIRED)
 find_package(realsense2)
+find_package(PCL REQUIRED)
 
 # Include directories
 include_directories(
@@ -68,7 +69,12 @@ include_directories(
         ${PROJECT_SOURCE_DIR}/Thirdparty/Sophus
         ${EIGEN3_INCLUDE_DIR}
         ${Pangolin_INCLUDE_DIRS}
+        ${PCL_INCLUDE_DIRS}
 )
+
+# PCL definitions and library directories
+add_definitions(${PCL_DEFINITIONS})
+link_directories(${PCL_LIBRARY_DIRS})
 
 # Set the library output directory
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
@@ -106,6 +112,7 @@ add_library(${PROJECT_NAME} SHARED
         src/YoloDetect.cpp
         src/yolov8_seg_onnx.cpp
         src/yolov8_utils.cpp
+        src/PointCloudMapping.cc
         include/System.h
         include/Tracking.h
         include/LocalMapping.h
@@ -139,6 +146,7 @@ add_library(${PROJECT_NAME} SHARED
         include/YoloDetect.h
         include/yolov8_seg_onnx.h
         include/yolov8_utils.h
+        include/PointCloudMapping.h
         )
 
 # Add the g2o library
@@ -151,6 +159,7 @@ target_link_libraries(${PROJECT_NAME}
         ${Pangolin_LIBRARIES}
         ${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
         ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+        ${PCL_LIBRARIES}
         -lboost_serialization
         -lcrypto
         )

@@ -40,6 +40,7 @@
 #include "ImuTypes.h"
 #include "Settings.h"
 #include "YoloDetect.h"
+#include "PointCloudMapping.h"
 
 namespace ORB_SLAM3
 {
@@ -265,6 +266,9 @@ private:
 
     // Yolo
     YoloDetection* mpDetector;
+    
+    // Point Cloud Mapping
+    PointCloudMapping* mpPointCloudMapping;
 
 };
 

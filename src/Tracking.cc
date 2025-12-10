@@ -1465,6 +1465,11 @@ namespace ORB_SLAM3
     {
         mpDetector = pDetector;
     }
+    
+    void Tracking::SetPointCloudMapping(PointCloudMapping *pPointCloudMapping)
+    {
+        mpPointCloudMapping = pPointCloudMapping;
+    }
 
     void Tracking::SetStepByStep(bool bSet)
     {
@@ -1545,6 +1550,13 @@ namespace ORB_SLAM3
     {
         mImGray = imRGB;
         cv::Mat imDepth = imD;
+        
+        // 保存RGB和深度图用于点云生成
+        if(mSensor == System::RGBD || mSensor == System::IMU_RGBD)
+        {
+            mImRGB = imRGB.clone();
+            mImDepth = imD.clone();
+        }
 
         // Yolo
         cv::Mat InputImage;
@@ -3267,6 +3279,8 @@ namespace ORB_SLAM3
             mpImuPreintegratedFromLastKF = new IMU::Preintegrated(pKF->GetImuBias(), pKF->mImuCalib);
         }
 
+
+        
         if (mSensor != System::MONOCULAR && mSensor != System::IMU_MONOCULAR) // TODO check if incluide imu_stereo
         {
             mCurrentFrame.UpdatePoseMatrices();
@@ -3358,6 +3372,19 @@ namespace ORB_SLAM3
         }
 
         mpLocalMapper->InsertKeyFrame(pKF);
+
+        // 保存RGB和深度图用于点云生成
+        if(mSensor == System::RGBD || mSensor == System::IMU_RGBD)
+        {
+            pKF->imLeftRgb = mImRGB.clone();
+            pKF->imDepth = mImDepth.clone();
+        }
+        
+        // 将关键帧传递给点云建图模块（仅用于RGB-D）
+        if(mpPointCloudMapping && (mSensor == System::RGBD || mSensor == System::IMU_RGBD))
+        {
+            mpPointCloudMapping->insertKeyFrame(pKF);
+        }
 
         mpLocalMapper->SetNotStop(false);
 

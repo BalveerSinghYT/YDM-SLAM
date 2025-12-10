@@ -185,6 +185,22 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
     // Yolo
     mpDetector = new YoloDetection();
+    
+    // Point Cloud Mapping (仅用于RGB-D传感器)
+    if(mSensor == RGBD || mSensor == IMU_RGBD)
+    {
+        float depthMapFactor = 1000.0f;
+        if(settings_)
+            depthMapFactor = settings_->depthMapFactor();
+            
+        // 参数: 体素滤波分辨率, 统计滤波邻域点数, 统计滤波标准差倍数, 深度图因子
+        mpPointCloudMapping = new PointCloudMapping(0.04, 50, 1.0, depthMapFactor);
+        std::cout << "点云建图模块已初始化" << std::endl;
+    }
+    else
+    {
+        mpPointCloudMapping = nullptr;
+    }
 
     //Create Drawers. These are used by the Viewer
     mpFrameDrawer = new FrameDrawer(mpAtlas);
@@ -197,6 +213,12 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
                              mpAtlas, mpKeyFrameDatabase, strSettingsFile, mSensor, settings_, strSequence);
 
     mpTracker->SetDetector(mpDetector);
+    
+    // 将点云建图模块传递给Tracker
+    if(mpPointCloudMapping)
+    {
+        mpTracker->SetPointCloudMapping(mpPointCloudMapping);
+    }
 
     //Initialize the Local Mapping thread and launch
     mpLocalMapper = new LocalMapping(this, mpAtlas, mSensor==MONOCULAR || mSensor==IMU_MONOCULAR,
@@ -530,6 +552,13 @@ void System::Shutdown()
 
     mpLocalMapper->RequestFinish();
     mpLoopCloser->RequestFinish();
+    
+    // 关闭点云建图线程
+    if(mpPointCloudMapping)
+    {
+        std::cout << "关闭点云建图线程..." << std::endl;
+        mpPointCloudMapping->shutdown();
+    }
     /*if(mpViewer)
     {
         mpViewer->RequestFinish();

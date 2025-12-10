@@ -53,6 +53,7 @@ class LocalMapping;
 class LoopClosing;
 class System;
 class Settings;
+class PointCloudMapping;
 
 class Tracking
 {  
@@ -80,6 +81,7 @@ public:
     void SetLoopClosing(LoopClosing* pLoopClosing);
     void SetViewer(Viewer* pViewer);
     void SetDetector(YoloDetection* pDetector);
+    void SetPointCloudMapping(PointCloudMapping* pPointCloudMapping);
     void SetStepByStep(bool bSet);
     bool GetStepByStep();
 
@@ -141,6 +143,8 @@ public:
     Frame mLastFrame;
 
     cv::Mat mImGray;
+    cv::Mat mImRGB;
+    cv::Mat mImDepth;
 
     // Initialization Variables (Monocular)
     std::vector<int> mvIniLastMatches;
@@ -287,6 +291,9 @@ protected:
 
     // Yolo
     YoloDetection* mpDetector;
+    
+    // Point Cloud Mapping
+    PointCloudMapping* mpPointCloudMapping;
 
     //Atlas
     Atlas* mpAtlas;

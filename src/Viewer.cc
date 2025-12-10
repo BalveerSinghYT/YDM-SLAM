@@ -220,9 +220,13 @@ void Viewer::Run()
     cout << "Starting the Viewer" << endl;
     while(1)
     {
+        cout << "DEBUG: Viewer loop iteration start" << endl;
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        cout << "DEBUG: After glClear" << endl;
 
+        cout << "DEBUG: Before GetCurrentOpenGLCameraMatrix" << endl;
         mpMapDrawer->GetCurrentOpenGLCameraMatrix(Twc,Ow);
+        cout << "DEBUG: After GetCurrentOpenGLCameraMatrix" << endl;
 
         if(mbStopTrack)
         {
@@ -356,20 +360,27 @@ void Viewer::Run()
                     }
                 }
             }
-        }
+            
+            // Mask processing under lock
+            if (!mask.empty())
+            {
+                // Ensure mask size matches toShow
+                if (toShow.size() != mask.size()){
+                    cv::resize(mask, mask, cv::Size(toShow.cols, toShow.rows), 0, 0, cv::INTER_NEAREST);
+                }
+                
+                // Blend mask
+                if (mask.type() == toShow.type())
+                    cv::addWeighted(toShow, 0.7, mask, 0.3, 0, toShow);
+                else {
+                    // Handle type mismatch if necessary (e.g. mask is single channel?)
+                    // Usually mask from YOLO is CV_8UC3 if visualization ready?
+                    // Assuming types match or add conversion
+                     cv::addWeighted(toShow, 0.7, mask, 0.3, 0, toShow);
+                }
+            }
+        } // End lock
 
-        if (toShow.size() != mask.size()){
-            cv::resize(mask, mask, cv::Size(toShow.cols, toShow.rows));
-        }
-        // std:: cout<<"toShow.size() = "<<toShow.size()<< " mask.size() = "<<mask.size()<<std::endl;
-
-        // cv::Mat mask3Channel;
-        // cv::cvtColor(mask, mask3Channel, cv::COLOR_GRAY2BGR);
-
-        // Blend the two images
-        // cv::addWeighted(toShow, 0.7, mask3Channel, 0.3, 0, toShow);
-
-        cv::addWeighted(toShow, 0.7, mask, 0.3, 0, toShow);
         cv::imshow("YDM-SLAM: Current Frame",toShow);
         cv::waitKey(mT);
 

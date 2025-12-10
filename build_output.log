@@ -1,0 +1,219 @@
+Configuring and building Thirdparty/DBoW2 ...
+mkdir: 无法创建目录 “build”: 文件已存在
+CMake Error: The current CMakeCache.txt directory /home/max/DynamicSLAM/YOLOv8-ORBSLAM/Thirdparty/DBoW2/build/CMakeCache.txt is different than the directory /home/max/DynamicSLAM/YDM-SLAM/Thirdparty/DBoW2/build where CMakeCache.txt was created. This may result in binaries being created in the wrong place. If you are not sure, reedit the CMakeCache.txt
+CMake Error: The source "/home/max/DynamicSLAM/YOLOv8-ORBSLAM/Thirdparty/DBoW2/CMakeLists.txt" does not match the source "/home/max/DynamicSLAM/YDM-SLAM/Thirdparty/DBoW2/CMakeLists.txt" used to generate cache.  Re-run cmake with a different source directory.
+/bin/sh: 1: cd: can't cd to /home/max/DynamicSLAM/YDM-SLAM/Thirdparty/DBoW2/build
+make[2]: *** [CMakeFiles/DBoW2.dir/build.make:219：CMakeFiles/DBoW2.dir/depend] 错误 2
+make[1]: *** [CMakeFiles/Makefile2:75：CMakeFiles/DBoW2.dir/all] 错误 2
+make: *** [Makefile:84：all] 错误 2
+Configuring and building Thirdparty/g2o ...
+mkdir: 无法创建目录 “build”: 文件已存在
+CMake Error: The current CMakeCache.txt directory /home/max/DynamicSLAM/YOLOv8-ORBSLAM/Thirdparty/g2o/build/CMakeCache.txt is different than the directory /home/max/DynamicSLAM/YDM-SLAM/Thirdparty/g2o/build where CMakeCache.txt was created. This may result in binaries being created in the wrong place. If you are not sure, reedit the CMakeCache.txt
+CMake Error: The source "/home/max/DynamicSLAM/YOLOv8-ORBSLAM/Thirdparty/g2o/CMakeLists.txt" does not match the source "/home/max/DynamicSLAM/YDM-SLAM/Thirdparty/g2o/CMakeLists.txt" used to generate cache.  Re-run cmake with a different source directory.
+/bin/sh: 1: cd: can't cd to /home/max/DynamicSLAM/YDM-SLAM/Thirdparty/g2o/build
+make[2]: *** [CMakeFiles/g2o.dir/build.make:531：CMakeFiles/g2o.dir/depend] 错误 2
+make[1]: *** [CMakeFiles/Makefile2:75：CMakeFiles/g2o.dir/all] 错误 2
+make: *** [Makefile:84：all] 错误 2
+Configuring and building Thirdparty/Sophus ...
+mkdir: 无法创建目录 “build”: 文件已存在
+CMake Error: The current CMakeCache.txt directory /home/max/DynamicSLAM/YOLOv8-ORBSLAM/Thirdparty/Sophus/build/CMakeCache.txt is different than the directory /home/max/DynamicSLAM/YDM-SLAM/Thirdparty/Sophus/build where CMakeCache.txt was created. This may result in binaries being created in the wrong place. If you are not sure, reedit the CMakeCache.txt
+CMake Error: The source "/home/max/DynamicSLAM/YOLOv8-ORBSLAM/Thirdparty/Sophus/CMakeLists.txt" does not match the source "/home/max/DynamicSLAM/YDM-SLAM/Thirdparty/Sophus/CMakeLists.txt" used to generate cache.  Re-run cmake with a different source directory.
+/bin/sh: 1: cd: can't cd to /home/max/DynamicSLAM/YDM-SLAM/Thirdparty/Sophus/build
+make[2]: *** [test/core/CMakeFiles/test_common.dir/build.make:96：test/core/CMakeFiles/test_common.dir/depend] 错误 2
+/bin/sh: 1: cd: can't cd to /home/max/DynamicSLAM/YDM-SLAM/Thirdparty/Sophus/build
+/bin/sh: 1: cd: can't cd to /home/max/DynamicSLAM/YDM-SLAM/Thirdparty/Sophus/build
+make[2]: *** [test/core/CMakeFiles/test_rxso2.dir/build.make:96：test/core/CMakeFiles/test_rxso2.dir/depend] 错误 2
+make[1]: *** [CMakeFiles/Makefile2:201：test/core/CMakeFiles/test_common.dir/all] 错误 2
+make[1]: *** 正在等待未完成的任务....
+make[2]: *** [test/core/CMakeFiles/test_so2.dir/build.make:96：test/core/CMakeFiles/test_so2.dir/depend] 错误 2
+make[1]: *** [CMakeFiles/Makefile2:228：test/core/CMakeFiles/test_so2.dir/all] 错误 2
+make[1]: *** [CMakeFiles/Makefile2:255：test/core/CMakeFiles/test_rxso2.dir/all] 错误 2
+/bin/sh: 1: cd: can't cd to /home/max/DynamicSLAM/YDM-SLAM/Thirdparty/Sophus/build
+make[2]: *** [test/core/CMakeFiles/test_se2.dir/build.make:96：test/core/CMakeFiles/test_se2.dir/depend] 错误 2
+/bin/sh: 1: cd: can't cd to /home/max/DynamicSLAM/YDM-SLAM/Thirdparty/Sophus/build
+make[2]: *** [test/core/CMakeFiles/test_geometry.dir/build.make:96：test/core/CMakeFiles/test_geometry.dir/depend] 错误 2
+/bin/sh: 1: cd: can't cd to /home/max/DynamicSLAM/YDM-SLAM/Thirdparty/Sophus/build
+/bin/sh: 1: cd: can't cd to /home/max/DynamicSLAM/YDM-SLAM/Thirdparty/Sophus/build
+/bin/sh: 1: cd: can't cd to /home/max/DynamicSLAM/YDM-SLAM/Thirdparty/Sophus/build
+make[2]: *** [test/core/CMakeFiles/test_sim2.dir/build.make:96：test/core/CMakeFiles/test_sim2.dir/depend] 错误 2
+make[1]: *** [CMakeFiles/Makefile2:282：test/core/CMakeFiles/test_geometry.dir/all] 错误 2
+make[1]: *** [CMakeFiles/Makefile2:309：test/core/CMakeFiles/test_se2.dir/all] 错误 2
+make[2]: *** [test/core/CMakeFiles/test_velocities.dir/build.make:96：test/core/CMakeFiles/test_velocities.dir/depend] 错误 2
+make[2]: *** [test/core/CMakeFiles/test_sim3.dir/build.make:96：test/core/CMakeFiles/test_sim3.dir/depend] 错误 2
+make[1]: *** [CMakeFiles/Makefile2:363：test/core/CMakeFiles/test_sim2.dir/all] 错误 2
+make[1]: *** [CMakeFiles/Makefile2:336：test/core/CMakeFiles/test_velocities.dir/all] 错误 2
+make[1]: *** [CMakeFiles/Makefile2:390：test/core/CMakeFiles/test_sim3.dir/all] 错误 2
+make: *** [Makefile:141：all] 错误 2
+Uncompress vocabulary ...
+Configuring and building YDM-SLAM ...
+mkdir: 无法创建目录 “build”: 文件已存在
+Build type: Release
+-- Using flag -std=c++14.
+OPENCV VERSION:
+4.2.0
+CMake Warning at CMakeLists.txt:61 (find_package):
+  By not providing "Findrealsense2.cmake" in CMAKE_MODULE_PATH this project
+  has asked CMake to find a package configuration file provided by
+  "realsense2", but CMake did not find one.
+
+  Could not find a package configuration file provided by "realsense2" with
+  any of the following names:
+
+    realsense2Config.cmake
+    realsense2-config.cmake
+
+  Add the installation prefix of "realsense2" to CMAKE_PREFIX_PATH or set
+  "realsense2_DIR" to a directory containing one of the above files.  If
+  "realsense2" provides a separate development package or SDK, be sure it has
+  been installed.
+
+
+-- Checking for module 'eigen3'
+--   Found eigen3, version 3.3.9
+-- Found Eigen: /usr/include/eigen3 (Required is at least version "3.1") 
+-- Eigen found (include: /usr/include/eigen3, version: 3.3.7)
+-- Found Boost: /usr/include (found suitable version "1.71.0", minimum required is "1.55.0") found components: system filesystem date_time iostreams regex 
+-- Checking for module 'flann'
+--   Found flann, version 1.9.1
+-- Found FLANN: /usr/lib/x86_64-linux-gnu/libflann_cpp.so  
+-- The imported target "vtkParseOGLExt" references the file
+   "/usr/bin/vtkParseOGLExt-7.1"
+but this file does not exist.  Possible reasons include:
+* The file was deleted, renamed, or moved to another location.
+* An install or uninstall procedure did not complete successfully.
+* The installation package was faulty and contained
+   "/usr/lib/cmake/vtk-7.1/VTKTargets.cmake"
+but not all the files it references.
+
+-- The imported target "vtkRenderingPythonTkWidgets" references the file
+   "/usr/lib/x86_64-linux-gnu/libvtkRenderingPythonTkWidgets.so"
+but this file does not exist.  Possible reasons include:
+* The file was deleted, renamed, or moved to another location.
+* An install or uninstall procedure did not complete successfully.
+* The installation package was faulty and contained
+   "/usr/lib/cmake/vtk-7.1/VTKTargets.cmake"
+but not all the files it references.
+
+-- The imported target "vtk" references the file
+   "/usr/bin/vtk"
+but this file does not exist.  Possible reasons include:
+* The file was deleted, renamed, or moved to another location.
+* An install or uninstall procedure did not complete successfully.
+* The installation package was faulty and contained
+   "/usr/lib/cmake/vtk-7.1/VTKTargets.cmake"
+but not all the files it references.
+
+-- The imported target "pvtk" references the file
+   "/usr/bin/pvtk"
+but this file does not exist.  Possible reasons include:
+* The file was deleted, renamed, or moved to another location.
+* An install or uninstall procedure did not complete successfully.
+* The installation package was faulty and contained
+   "/usr/lib/cmake/vtk-7.1/VTKTargets.cmake"
+but not all the files it references.
+
+-- Checking for module 'libusb-1.0'
+--   Found libusb-1.0, version 1.0.23
+-- Found USB_10: /usr/lib/x86_64-linux-gnu/libusb-1.0.so  
+-- Found OpenNI: /usr/lib/libOpenNI.so  
+-- OpenNI found (include: /usr/include/ni, lib: /usr/lib/libOpenNI.so)
+-- Found OpenNI2: /usr/lib/libOpenNI2.so  
+-- OpenNI2 found (include: /usr/include/openni2, lib: /usr/lib/libOpenNI2.so)
+** WARNING ** io features related to pcap will be disabled
+** WARNING ** io features related to png will be disabled
+-- Found libusb-1.0: /usr/include  
+** WARNING ** io features related to libusb-1.0 will be disabled
+-- OpenNI found (include: /usr/include/ni, lib: /usr/lib/libOpenNI.so)
+-- OpenNI2 found (include: /usr/include/openni2, lib: /usr/lib/libOpenNI2.so)
+-- Found Qhull: optimized;/usr/lib/x86_64-linux-gnu/libqhull.so;debug;/usr/lib/x86_64-linux-gnu/libqhull.so  
+-- QHULL found (include: /usr/include, lib: optimized;/usr/lib/x86_64-linux-gnu/libqhull.so;debug;/usr/lib/x86_64-linux-gnu/libqhull.so)
+-- OpenNI found (include: /usr/include/ni, lib: /usr/lib/libOpenNI.so)
+-- looking for PCL_COMMON
+-- Found PCL_COMMON: /usr/lib/x86_64-linux-gnu/libpcl_common.so  
+-- looking for PCL_KDTREE
+-- Found PCL_KDTREE: /usr/lib/x86_64-linux-gnu/libpcl_kdtree.so  
+-- looking for PCL_OCTREE
+-- Found PCL_OCTREE: /usr/lib/x86_64-linux-gnu/libpcl_octree.so  
+-- looking for PCL_SEARCH
+-- Found PCL_SEARCH: /usr/lib/x86_64-linux-gnu/libpcl_search.so  
+-- looking for PCL_SAMPLE_CONSENSUS
+-- Found PCL_SAMPLE_CONSENSUS: /usr/lib/x86_64-linux-gnu/libpcl_sample_consensus.so  
+-- looking for PCL_FILTERS
+-- Found PCL_FILTERS: /usr/lib/x86_64-linux-gnu/libpcl_filters.so  
+-- looking for PCL_2D
+-- Found PCL_2D: /usr/include/pcl-1.10  
+-- looking for PCL_GEOMETRY
+-- Found PCL_GEOMETRY: /usr/include/pcl-1.10  
+-- looking for PCL_IO
+-- Found PCL_IO: /usr/lib/x86_64-linux-gnu/libpcl_io.so  
+-- looking for PCL_FEATURES
+-- Found PCL_FEATURES: /usr/lib/x86_64-linux-gnu/libpcl_features.so  
+-- looking for PCL_ML
+-- Found PCL_ML: /usr/lib/x86_64-linux-gnu/libpcl_ml.so  
+-- looking for PCL_SEGMENTATION
+-- Found PCL_SEGMENTATION: /usr/lib/x86_64-linux-gnu/libpcl_segmentation.so  
+-- looking for PCL_VISUALIZATION
+-- Found PCL_VISUALIZATION: /usr/lib/x86_64-linux-gnu/libpcl_visualization.so  
+-- looking for PCL_SURFACE
+-- Found PCL_SURFACE: /usr/lib/x86_64-linux-gnu/libpcl_surface.so  
+-- looking for PCL_REGISTRATION
+-- Found PCL_REGISTRATION: /usr/lib/x86_64-linux-gnu/libpcl_registration.so  
+-- looking for PCL_KEYPOINTS
+-- Found PCL_KEYPOINTS: /usr/lib/x86_64-linux-gnu/libpcl_keypoints.so  
+-- looking for PCL_TRACKING
+-- Found PCL_TRACKING: /usr/lib/x86_64-linux-gnu/libpcl_tracking.so  
+-- looking for PCL_RECOGNITION
+-- Found PCL_RECOGNITION: /usr/lib/x86_64-linux-gnu/libpcl_recognition.so  
+-- looking for PCL_STEREO
+-- Found PCL_STEREO: /usr/lib/x86_64-linux-gnu/libpcl_stereo.so  
+-- looking for PCL_APPS
+-- Found PCL_APPS: /usr/lib/x86_64-linux-gnu/libpcl_apps.so  
+-- looking for PCL_IN_HAND_SCANNER
+-- Found PCL_IN_HAND_SCANNER: /usr/include/pcl-1.10  
+-- looking for PCL_POINT_CLOUD_EDITOR
+-- Found PCL_POINT_CLOUD_EDITOR: /usr/include/pcl-1.10  
+-- looking for PCL_OUTOFCORE
+-- Found PCL_OUTOFCORE: /usr/lib/x86_64-linux-gnu/libpcl_outofcore.so  
+-- looking for PCL_PEOPLE
+-- Found PCL_PEOPLE: /usr/lib/x86_64-linux-gnu/libpcl_people.so  
+-- Found PCL: pcl_common;pcl_kdtree;pcl_octree;pcl_search;pcl_sample_consensus;pcl_filters;pcl_io;pcl_features;pcl_ml;pcl_segmentation;pcl_visualization;pcl_surface;pcl_registration;pcl_keypoints;pcl_tracking;pcl_recognition;pcl_stereo;pcl_apps;pcl_outofcore;pcl_people;/usr/local/lib/libboost_system.so;/usr/local/lib/libboost_filesystem.so;/usr/local/lib/libboost_date_time.so;/usr/local/lib/libboost_iostreams.so;/usr/local/lib/libboost_regex.so;optimized;/usr/lib/x86_64-linux-gnu/libqhull.so;debug;/usr/lib/x86_64-linux-gnu/libqhull.so;/usr/lib/libOpenNI.so;/usr/lib/libOpenNI2.so;vtkChartsCore;vtkCommonColor;vtkCommonCore;vtksys;vtkCommonDataModel;vtkCommonMath;vtkCommonMisc;vtkCommonSystem;vtkCommonTransforms;vtkCommonExecutionModel;vtkFiltersGeneral;vtkCommonComputationalGeometry;vtkFiltersCore;vtkInfovisCore;vtkFiltersExtraction;vtkFiltersStatistics;vtkImagingFourier;vtkImagingCore;vtkalglib;vtkRenderingContext2D;vtkRenderingCore;vtkFiltersGeometry;vtkFiltersSources;vtkRenderingFreeType;/usr/lib/x86_64-linux-gnu/libfreetype.so;/usr/lib/x86_64-linux-gnu/libz.so;vtkFiltersModeling;vtkImagingSources;vtkInteractionStyle;vtkInteractionWidgets;vtkFiltersHybrid;vtkImagingColor;vtkImagingGeneral;vtkImagingHybrid;vtkIOImage;vtkDICOMParser;vtkmetaio;/usr/lib/x86_64-linux-gnu/libjpeg.so;/usr/lib/x86_64-linux-gnu/libpng.so;/usr/lib/x86_64-linux-gnu/libtiff.so;vtkRenderingAnnotation;vtkRenderingVolume;vtkIOXML;vtkIOCore;vtkIOXMLParser;/usr/lib/x86_64-linux-gnu/libexpat.so;vtkIOGeometry;vtkIOLegacy;vtkIOPLY;vtkRenderingLOD;vtkViewsContext2D;vtkViewsCore;vtkRenderingContextOpenGL2;vtkRenderingOpenGL2;FLANN::FLANN  
+-- BUILD TYPE:Release
+-- Compiling on Unix
+-- Found OpenMP_C: -fopenmp  
+-- Found OpenMP_CXX: -fopenmp  
+-- Found OpenMP: TRUE   
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/max/DynamicSLAM/YOLOv8-ORBSLAM/build
+Scanning dependencies of target ORB_SLAM3
+[  0%] Building CXX object CMakeFiles/ORB_SLAM3.dir/src/System.cc.o
+[  3%] Building CXX object CMakeFiles/ORB_SLAM3.dir/src/Tracking.cc.o
+[  6%] Building CXX object CMakeFiles/ORB_SLAM3.dir/src/LocalMapping.cc.o
+[  9%] Building CXX object CMakeFiles/ORB_SLAM3.dir/src/LoopClosing.cc.o
+[ 12%] Building CXX object CMakeFiles/ORB_SLAM3.dir/src/ORBextractor.cc.o
+[ 16%] Building CXX object CMakeFiles/ORB_SLAM3.dir/src/ORBmatcher.cc.o
+[ 19%] Building CXX object CMakeFiles/ORB_SLAM3.dir/src/FrameDrawer.cc.o
+[ 22%] Building CXX object CMakeFiles/ORB_SLAM3.dir/src/Converter.cc.o
+[ 25%] Building CXX object CMakeFiles/ORB_SLAM3.dir/src/MapPoint.cc.o
+[ 25%] Building CXX object CMakeFiles/ORB_SLAM3.dir/src/KeyFrame.cc.o
+/home/max/DynamicSLAM/YOLOv8-ORBSLAM/src/KeyFrame.cc: In constructor ‘ORB_SLAM3::KeyFrame::KeyFrame(ORB_SLAM3::Frame&, ORB_SLAM3::Map*, ORB_SLAM3::KeyFrameDatabase*)’:
+/home/max/DynamicSLAM/YOLOv8-ORBSLAM/src/KeyFrame.cc:101:11: error: ‘class ORB_SLAM3::Frame’ has no member named ‘mImRGB’
+  101 |     if(!F.mImRGB.empty())
+      |           ^~~~~~
+/home/max/DynamicSLAM/YOLOv8-ORBSLAM/src/KeyFrame.cc:102:23: error: ‘class ORB_SLAM3::Frame’ has no member named ‘mImRGB’
+  102 |         imLeftRgb = F.mImRGB.clone();
+      |                       ^~~~~~
+/home/max/DynamicSLAM/YOLOv8-ORBSLAM/src/KeyFrame.cc:103:11: error: ‘class ORB_SLAM3::Frame’ has no member named ‘mImDepth’; did you mean ‘mThDepth’?
+  103 |     if(!F.mImDepth.empty())
+      |           ^~~~~~~~
+      |           mThDepth
+/home/max/DynamicSLAM/YOLOv8-ORBSLAM/src/KeyFrame.cc:104:21: error: ‘class ORB_SLAM3::Frame’ has no member named ‘mImDepth’; did you mean ‘mThDepth’?
+  104 |         imDepth = F.mImDepth.clone();
+      |                     ^~~~~~~~
+      |                     mThDepth
+[ 29%] Building CXX object CMakeFiles/ORB_SLAM3.dir/src/Atlas.cc.o
+make[3]: *** [CMakeFiles/ORB_SLAM3.dir/build.make:180：CMakeFiles/ORB_SLAM3.dir/src/KeyFrame.cc.o] 错误 1
+make[3]: *** 正在等待未完成的任务....
+make[2]: *** [CMakeFiles/Makefile2:711：CMakeFiles/ORB_SLAM3.dir/all] 错误 2
+make[1]: *** [CMakeFiles/Makefile2:367：CMakeFiles/rgbd_tum.dir/rule] 错误 2
+make: *** [Makefile:222：rgbd_tum] 错误 2

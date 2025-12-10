@@ -34,6 +34,10 @@
 
 #include <mutex>
 
+// Point Cloud Library
+#include <pcl/point_types.h>
+#include <pcl/point_cloud.h>
+
 #include <boost/serialization/base_object.hpp>
 #include <boost/serialization/vector.hpp>
 #include <boost/serialization/map.hpp>
@@ -535,6 +539,14 @@ public:
         }
         cout << "Point distribution in KeyFrame: left-> " << left << " --- right-> " << right << endl;
     }
+
+    // ===== Point Cloud Mapping =====
+    // RGB图像和深度图（用于生成点云）
+    cv::Mat imLeftRgb;  // RGB图像
+    cv::Mat imDepth;    // 深度图
+    
+    // 生成的点云数据
+    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr mptrPointCloud;
 
 
 };
