@@ -109,6 +109,15 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
             
         for (int n = 0; n < kf->imDepth.cols; n += 4)
         {
+            // Dynamic object filtering
+            bool isDynamic = false;
+            for (const cv::Mat& mask : kf->mvDynamicMask) {
+                if (m < mask.rows && n < mask.cols && mask.at<uchar>(m, n) == 255) {
+                    isDynamic = true;
+                    break;
+                }
+            }
+            if (isDynamic) continue;
             float d = 0;
             if (kf->imDepth.type() == CV_32F)
             {
@@ -135,9 +144,9 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
             p.y = (m - kf->cy) * p.z / kf->fy;
 
             // 获取颜色信息
-            p.b = kf->imLeftRgb.ptr<uchar>(m)[n * 3 + 2];
+            p.b = kf->imLeftRgb.ptr<uchar>(m)[n * 3];
             p.g = kf->imLeftRgb.ptr<uchar>(m)[n * 3 + 1];
-            p.r = kf->imLeftRgb.ptr<uchar>(m)[n * 3];
+            p.r = kf->imLeftRgb.ptr<uchar>(m)[n * 3 + 2];
 
             pPointCloud->points.push_back(p);
         }

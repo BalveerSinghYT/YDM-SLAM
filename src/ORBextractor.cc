@@ -878,7 +878,10 @@ namespace ORB_SLAM3
 
             if (hasDynamicMask || hasDynamicArea)
             {
-                for (auto vit_kp = vToDistributeKeys.begin(); vit_kp != vToDistributeKeys.end();)
+                vector<cv::KeyPoint> vFilteredKeys;
+                vFilteredKeys.reserve(vToDistributeKeys.size());
+
+                for (auto vit_kp = vToDistributeKeys.begin(); vit_kp != vToDistributeKeys.end(); ++vit_kp)
                 {
                     bool Find = false;
                     // Pre-calculate full-res coordinates
@@ -914,15 +917,12 @@ namespace ORB_SLAM3
                         }
                     }
 
-                    if (Find)
+                    if (!Find)
                     {
-                        vit_kp = vToDistributeKeys.erase(vit_kp);
-                    }
-                    else
-                    {
-                        ++vit_kp;
+                        vFilteredKeys.push_back(*vit_kp);
                     }
                 }
+                vToDistributeKeys = vFilteredKeys;
             }
 
             vector<KeyPoint> & keypoints = allKeypoints[level];

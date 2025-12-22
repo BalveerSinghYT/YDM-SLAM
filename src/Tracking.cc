@@ -3378,6 +3378,8 @@ namespace ORB_SLAM3
         {
             pKF->imLeftRgb = mImRGB.clone();
             pKF->imDepth = mImDepth.clone();
+            pKF->mvDynamicMask = mpORBextractorLeft->mvDynamicMask;
+            pKF->mvDynamicArea = mpORBextractorLeft->mvDynamicArea;
         }
         
         // 将关键帧传递给点云建图模块（仅用于RGB-D）

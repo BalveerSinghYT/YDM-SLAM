@@ -161,6 +161,32 @@ void serializeVectorKeyPoints(Archive& ar, const std::vector<cv::KeyPoint>& vKP,
     }
 }
 
+template<class Archive>
+void serializeVectorMat(Archive& ar, std::vector<cv::Mat>& vMat, const unsigned int version)
+{
+    int NumEl;
+    if (Archive::is_saving::value) NumEl = vMat.size();
+    ar & NumEl;
+    if (Archive::is_loading::value) vMat.resize(NumEl);
+    for(int i=0; i<NumEl; ++i) serializeMatrix(ar, vMat[i], version);
+}
+
+template<class Archive>
+void serializeRect(Archive& ar, cv::Rect2i& rect, const unsigned int version)
+{
+    ar & rect.x & rect.y & rect.width & rect.height;
+}
+
+template<class Archive>
+void serializeVectorRect(Archive& ar, std::vector<cv::Rect2i>& vRect, const unsigned int version)
+{
+    int NumEl;
+    if (Archive::is_saving::value) NumEl = vRect.size();
+    ar & NumEl;
+    if (Archive::is_loading::value) vRect.resize(NumEl);
+    for(int i=0; i<NumEl; ++i) serializeRect(ar, vRect[i], version);
+}
+
 } // namespace ORB_SLAM3
 
 #endif // SERIALIZATION_UTILS_H

@@ -58,6 +58,10 @@ bool YoloDetection::Detect()
         int r = rand() % 256;
         color.push_back(cv::Scalar(b, g, r));
     }
+    mvDynamicArea.clear();
+    mvDynamicMask.clear();
+    mmDetectMap.clear();
+
     std::vector<OutputParams> result;
     objectMask = cv::Mat::zeros(image.size(), CV_8UC1);
     // std:: cout<< "objectMask size: " << objectMask.size() << " image size: " << image.size() << endl;
@@ -77,27 +81,36 @@ bool YoloDetection::Detect()
                 top = result[i].rotatedBox.center.y;
             }
             
-            // add masked image to mvDynamicMask
+            // add masked image for visualization
             if (result[i].boxMask.rows && result[i].boxMask.cols > 0){
                 mask(result[i].box).setTo(color[result[i].id], result[i].boxMask);
             }
-            if (count(mvDynamicNames.begin(), mvDynamicNames.end(), model._className[result[i].id])){
-                objectMask(result[i].box).setTo(cv::Scalar(255, 255, 255), result[i].boxMask);
-                mvDynamicMask.push_back(objectMask);
-                cv::Rect2i DynamicArea(left, top, (result[i].box.width), (result[i].box.height));
-                mvDynamicArea.push_back(DynamicArea);
+
+            // Safety check for class index
+            if (result[i].id >= 0 && result[i].id < model._className.size()) {
+                if (count(mvDynamicNames.begin(), mvDynamicNames.end(), model._className[result[i].id])){
+                    objectMask(result[i].box).setTo(cv::Scalar(255, 255, 255), result[i].boxMask);
+                    cv::Rect2i DynamicArea(left, top, (result[i].box.width), (result[i].box.height));
+                    mvDynamicArea.push_back(DynamicArea);
+                }
+                
+                cv:: Rect2i DetectArea(left, top, (result[i].box.width), (result[i].box.height));
+                mmDetectMap[model._className[result[i].id]].push_back(DetectArea);
             }
-            
-            cv:: Rect2i DetectArea(left, top, (result[i].box.width), (result[i].box.height));
-            mmDetectMap[model._className[result[i].id]].push_back(DetectArea);
-           
         }
-        if (mvDynamicArea.size() == 0)
+
+        // Dilate the merged dynamic mask
+        if (!mvDynamicArea.empty())
+        {
+            cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
+            cv::dilate(objectMask, objectMask, kernel);
+            mvDynamicMask.push_back(objectMask.clone());
+        }
+        else
         {
             cv::Rect2i tDynamicArea(1, 1, 1, 1);
             mvDynamicArea.push_back(tDynamicArea);
         }
-
     }
     else
         cout << "Detect Failed!" << endl;

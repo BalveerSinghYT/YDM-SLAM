@@ -194,6 +194,12 @@ class KeyFrame
         ar & boost::serialization::make_array(mVw.data(), mVw.size());
         ar & boost::serialization::make_array(mOwb.data(), mOwb.size());
         ar & mbHasVelocity;
+        
+        // Point Cloud and Dynamic Info
+        serializeMatrix(ar, imLeftRgb, version);
+        serializeMatrix(ar, imDepth, version);
+        serializeVectorMat(ar, mvDynamicMask, version);
+        serializeVectorRect(ar, mvDynamicArea, version);
     }
 
 public:
@@ -547,6 +553,10 @@ public:
     
     // 生成的点云数据
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr mptrPointCloud;
+
+    // 动态对象信息
+    std::vector<cv::Mat> mvDynamicMask;
+    std::vector<cv::Rect2i> mvDynamicArea;
 
 
 };
