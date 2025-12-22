@@ -105,7 +105,6 @@ bool YoloDetection::Detect()
     return true;
 }
 
-
 void YoloDetection::GetImage(cv::Mat &RGB)
 {
     mRGB = RGB;

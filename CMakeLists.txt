@@ -3,7 +3,7 @@ project(ORB_SLAM3)
 
 # Set the build type if not specified
 IF(NOT CMAKE_BUILD_TYPE)
-    SET(CMAKE_BUILD_TYPE Release)
+    SET(CMAKE_BUILD_TYPE RelWithDebInfo)
 ENDIF()
 
 # Print the build type

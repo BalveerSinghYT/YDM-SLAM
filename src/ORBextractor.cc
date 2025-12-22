@@ -868,60 +868,60 @@ namespace ORB_SLAM3
                         }
                     }
 
-                    // Delete kp
-                    float scale = mvScaleFactor[level];
-                    for (auto vit = vToDistributeKeys.begin(); vit != vToDistributeKeys.end(); vit++)
-                    {
-                        vit->pt.x += minBorderX;
-                        vit->pt.y += minBorderY;
-                        vit->pt *= scale;
-                    }
-                    // YOLO Mask
+                }
+            }
+
+            // Move YOLO Mask and Dynamic Area filtering out of the cell loops
+            float scale = mvScaleFactor[level];
+            bool hasDynamicMask = !mvDynamicMask.empty();
+            bool hasDynamicArea = !mvDynamicArea.empty();
+
+            if (hasDynamicMask || hasDynamicArea)
+            {
+                for (auto vit_kp = vToDistributeKeys.begin(); vit_kp != vToDistributeKeys.end();)
+                {
                     bool Find = false;
-                    for (auto vit_kp = vToDistributeKeys.begin(); vit_kp != vToDistributeKeys.end();) {
-                        if (!mvDynamicMask.empty())
+                    // Pre-calculate full-res coordinates
+                    float x_full = (vit_kp->pt.x + minBorderX) * scale;
+                    float y_full = (vit_kp->pt.y + minBorderY) * scale;
+                    cv::Point2f pt_full(x_full, y_full);
+
+                    if (hasDynamicMask)
+                    {
+                        for (auto it = mvDynamicMask.begin(); it != mvDynamicMask.end(); it++)
                         {
-                            for (auto it = mvDynamicMask.begin(); it != mvDynamicMask.end(); it++) {
-                                Find = false;
-                                if (it->at<uchar>(vit_kp->pt.y, vit_kp->pt.x) == 255) {
-                                    Find = true;
-                                    vit_kp = vToDistributeKeys.erase(vit_kp);
-                                    break;
-                                }
-                            }
-                        } 
-                        
-                        else 
-                        {
-                            // std:: cout<<"inside else"<<endl;
-                            for (auto vit_area = mvDynamicArea.begin(); vit_area != mvDynamicArea.end(); vit_area++)
+                            // Bounds check
+                            if (y_full >= 0 && y_full < it->rows && x_full >= 0 && x_full < it->cols)
                             {
-                                Find = false;
-                                if (vit_area->contains(vit_kp->pt))
+                                if (it->at<uchar>((int)y_full, (int)x_full) == 255)
                                 {
                                     Find = true;
-                                    vit_kp = vToDistributeKeys.erase(vit_kp);
-                                    std::cout<<"Erased"<<std::endl;
                                     break;
                                 }
                             }
                         }
-                        if (!Find) {
-                            ++vit_kp;
-                            Find = false;
+                    }
+                    
+                    if (!Find && hasDynamicArea)
+                    {
+                        for (auto vit_area = mvDynamicArea.begin(); vit_area != mvDynamicArea.end(); vit_area++)
+                        {
+                            if (vit_area->contains(pt_full))
+                            {
+                                Find = true;
+                                break;
+                            }
                         }
                     }
 
-                                      
-                    float scale_inverse = 1 / scale;
-                    for (auto vit = vToDistributeKeys.begin(); vit != vToDistributeKeys.end(); vit++)
+                    if (Find)
                     {
-                        vit->pt *= scale_inverse;
-                        vit->pt.x -= minBorderX;
-                        vit->pt.y -= minBorderY;
+                        vit_kp = vToDistributeKeys.erase(vit_kp);
                     }
-
-
+                    else
+                    {
+                        ++vit_kp;
+                    }
                 }
             }
 

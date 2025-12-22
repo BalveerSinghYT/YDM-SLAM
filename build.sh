@@ -3,7 +3,7 @@ echo "Configuring and building Thirdparty/DBoW2 ..."
 cd Thirdparty/DBoW2
 mkdir build
 cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
 make -j
 
 cd ../../g2o
@@ -12,7 +12,7 @@ echo "Configuring and building Thirdparty/g2o ..."
 
 mkdir build
 cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
 make -j
 
 cd ../../Sophus
@@ -21,7 +21,7 @@ echo "Configuring and building Thirdparty/Sophus ..."
 
 mkdir build
 cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
 make -j
 
 cd ../../../
@@ -36,5 +36,5 @@ echo "Configuring and building YDM-SLAM ..."
 
 mkdir build
 cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
 make rgbd_tum -j4
