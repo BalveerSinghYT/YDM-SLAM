@@ -17,7 +17,7 @@ YoloDetection::YoloDetection()
 {
     std::cout << "Loading Yolo model..." << std::endl;
 
-    std::string model_path_seg = "models/yolo11m-seg.onnx";
+    std::string model_path_seg = "models/yolo11s-seg.onnx";
 
 	// loading model
     if (model.ReadModel(model_path_seg, true)) {
@@ -102,7 +102,7 @@ bool YoloDetection::Detect()
         // Dilate the merged dynamic mask
         if (!mvDynamicArea.empty())
         {
-            cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
+            cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(11, 11));
             cv::dilate(objectMask, objectMask, kernel);
             mvDynamicMask.push_back(objectMask.clone());
         }

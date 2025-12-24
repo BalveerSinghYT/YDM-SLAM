@@ -194,7 +194,7 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
             depthMapFactor = settings_->depthMapFactor();
             
         // 参数: 体素滤波分辨率, 统计滤波邻域点数, 统计滤波标准差倍数, 深度图因子
-        mpPointCloudMapping = new PointCloudMapping(0.04, 50, 1.0, depthMapFactor);
+        mpPointCloudMapping = new PointCloudMapping(0.01, 50, 2.0, depthMapFactor);
         std::cout << "点云建图模块已初始化" << std::endl;
     }
     else

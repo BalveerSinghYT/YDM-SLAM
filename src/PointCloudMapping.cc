@@ -103,11 +103,11 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
     
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr pPointCloud(new pcl::PointCloud<pcl::PointXYZRGBA>);
     
-    // 从深度图生成点云，采样间隔为4像素
-    for (int m = 0; m < kf->imDepth.rows; m += 4)
+    // 从深度图生成点云，采样间隔为2像素
+    for (int m = 0; m < kf->imDepth.rows; m += 2)
     {
             
-        for (int n = 0; n < kf->imDepth.cols; n += 4)
+        for (int n = 0; n < kf->imDepth.cols; n += 2)
         {
             // Dynamic object filtering
             bool isDynamic = false;
@@ -135,6 +135,14 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
             // 过滤无效深度值
             if (d < 0.05 || d > 6)
                 continue;
+
+            // Simple edge filtering (depth jump)
+            if (n > 4) {
+                float d_left = 0;
+                if (kf->imDepth.type() == CV_32F) d_left = kf->imDepth.ptr<float>(m)[n-4];
+                else d_left = (float)kf->imDepth.ptr<unsigned short>(m)[n-4] / mDepthMapFactor;
+                if (std::abs(d - d_left) > 0.1 * d) continue; 
+            }
             
             pcl::PointXYZRGBA p;
             
@@ -206,16 +214,29 @@ void PointCloudMapping::viewer()
             // 生成点云
             generatePointCloud(pKF);
             
+            // Apply Statistical Outlier Removal (SOR) to reduce ghosting/noise
+            pcl::PointCloud<pcl::PointXYZRGBA>::Ptr pFilteredLocal(new pcl::PointCloud<pcl::PointXYZRGBA>);
+            statistical_filter->setInputCloud(pKF->mptrPointCloud);
+            statistical_filter->filter(*pFilteredLocal);
+
             // 将点云转换到世界坐标系
             pcl::PointCloud<pcl::PointXYZRGBA>::Ptr p(new pcl::PointCloud<pcl::PointXYZRGBA>);
             Eigen::Matrix4f Twc_f = pKF->GetPoseInverse().matrix();
             Eigen::Matrix4d Twc_d = Twc_f.cast<double>();
-            pcl::transformPointCloud(*(pKF->mptrPointCloud), *p, Twc_d);
+            pcl::transformPointCloud(*pFilteredLocal, *p, Twc_d);
 
             // 添加到全局地图
             {
                 std::unique_lock<std::mutex> lck(mMutexGlobalMap);
                 globalMap->insert(globalMap->end(), p->begin(), p->end());
+                
+                // Periodically apply Voxel Grid filtering to prevent memory bloat
+                if (globalMap->size() > 500000) {
+                    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr tmpGlobalMapFilter(new pcl::PointCloud<pcl::PointXYZRGBA>());
+                    voxel->setInputCloud(globalMap);
+                    voxel->filter(*tmpGlobalMapFilter);
+                    globalMap->swap(*tmpGlobalMapFilter);
+                }
             }
         }
         
