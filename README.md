@@ -69,3 +69,7 @@ Download any dynamic sequence from [TUM-RGBD dataset](https://cvg.cit.tum.de/dat
 ## 4. Demo
 [![Watch the Demo Video Here](https://github.com/user-attachments/assets/91f1dc26-fd0d-4b2b-8218-9372cc1c0ee7)](https://youtu.be/J7V5pD78oNM)
 
+## 5. Star History
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=balveersinghyt/ydm-slam&type=date&legend=bottom-right)](https://www.star-history.com/#balveersinghyt/ydm-slam&type=date&legend=bottom-right)
