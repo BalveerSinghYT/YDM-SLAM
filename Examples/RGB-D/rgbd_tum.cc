@@ -32,9 +32,9 @@ void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageF
 
 int main(int argc, char **argv)
 {
-    if(argc != 5)
+    if(argc < 5)
     {
-        cerr << endl << "Usage: ./rgbd_tum path_to_vocabulary path_to_settings path_to_sequence path_to_association" << endl;
+        cerr << endl << "Usage: ./rgbd_tum path_to_vocabulary path_to_settings path_to_sequence path_to_association <optional_step_by_step>" << endl;
         return 1;
     }
 
@@ -44,6 +44,14 @@ int main(int argc, char **argv)
     vector<double> vTimestamps;
     string strAssociationFilename = string(argv[4]);
     LoadImages(strAssociationFilename, vstrImageFilenamesRGB, vstrImageFilenamesD, vTimestamps);
+
+    bool bStepByStep = false;
+    if(argc >= 6)
+    {
+        string argStep = string(argv[5]);
+        if(argStep == "true" || argStep == "--step")
+            bStepByStep = true;
+    }
 
     // Check consistency in the number of images and depthmaps
     int nImages = vstrImageFilenamesRGB.size();
@@ -59,7 +67,7 @@ int main(int argc, char **argv)
     }
 
     // Create SLAM system. It initializes all system threads and gets ready to process frames.
-    ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::RGBD,true);
+    ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::RGBD,true,0,"",bStepByStep);
     float imageScale = SLAM.GetImageScale();
 
     // Vector for tracking time statistics

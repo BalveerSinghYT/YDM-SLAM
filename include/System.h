@@ -40,7 +40,7 @@
 #include "ImuTypes.h"
 #include "Settings.h"
 #include "YoloDetect.h"
-#include "PointCloudMapping.h"
+// #include "PointCloudMapping.h"
 
 namespace ORB_SLAM3
 {
@@ -80,6 +80,7 @@ class Tracking;
 class LocalMapping;
 class LoopClosing;
 class Settings;
+class PointCloudMapping;
 
 class System
 {
@@ -103,7 +104,7 @@ public:
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     // Initialize the SLAM system. It launches the Local Mapping, Loop Closing and Viewer threads.
-    System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor, const bool bUseViewer = true, const int initFr = 0, const string &strSequence = std::string());
+    System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor, const bool bUseViewer = true, const int initFr = 0, const string &strSequence = std::string(), const bool bEnableStepByStep = false);
 
     // Proccess the given stereo frame. Images must be synchronized and rectified.
     // Input images: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.

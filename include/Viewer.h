@@ -42,7 +42,7 @@ class Viewer
 {
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-    Viewer(System* pSystem, FrameDrawer* pFrameDrawer, MapDrawer* pMapDrawer, Tracking *pTracking, const string &strSettingPath, Settings* settings);
+    Viewer(System* pSystem, FrameDrawer* pFrameDrawer, MapDrawer* pMapDrawer, Tracking *pTracking, const string &strSettingPath, Settings* settings, const bool bEnableStepByStep = false);
 
     void newParameterLoader(Settings* settings);
 
@@ -102,6 +102,8 @@ private:
     std::mutex mMutexStop;
 
     bool mbStopTrack;
+
+    bool mbStepByStep;
 
 };
 

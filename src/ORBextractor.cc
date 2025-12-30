@@ -905,6 +905,8 @@ namespace ORB_SLAM3
                         }
                     }
                     
+                    /* 
+                    // RDFP-SLAM: Disable Box filtering. We want to verify these points in Tracking.
                     if (!Find && hasDynamicArea)
                     {
                         for (auto vit_area = mvDynamicArea.begin(); vit_area != mvDynamicArea.end(); vit_area++)
@@ -916,6 +918,7 @@ namespace ORB_SLAM3
                             }
                         }
                     }
+                    */
 
                     if (!Find)
                     {

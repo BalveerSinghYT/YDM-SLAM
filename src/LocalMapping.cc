@@ -61,6 +61,11 @@ void LocalMapping::SetTracker(Tracking *pTracker)
     mpTracker=pTracker;
 }
 
+void LocalMapping::SetPointCloudMapping(PointCloudMapping *pPointCloudMapping)
+{
+    mpPointCloudMapping = pPointCloudMapping;
+}
+
 void LocalMapping::Run()
 {
     mbFinished = false;
@@ -248,6 +253,9 @@ void LocalMapping::Run()
 #endif
 
             mpLoopCloser->InsertKeyFrame(mpCurrentKeyFrame);
+            // PointCloudMapping insertion is handled by Tracking.cc
+            // if(mpPointCloudMapping)
+            //     mpPointCloudMapping->insertKeyFrame(mpCurrentKeyFrame);
 
 #ifdef REGISTER_TIMES
             std::chrono::steady_clock::time_point time_EndLocalMap = std::chrono::steady_clock::now();

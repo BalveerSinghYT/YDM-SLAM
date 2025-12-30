@@ -193,6 +193,32 @@ cv::Mat FrameDrawer::DrawFrame(float imageScale)
                 }
             }
         }
+
+        // RDFP-SLAM: Visualize Dynamic Outliers in RED
+        // const float r = 5; // Already declared above
+        for(size_t i=0; i<vOutlierKeys.size(); i++)
+        {
+            cv::Point2f pt1, pt2;
+            cv::Point2f point;
+            if(imageScale != 1.f)
+            {
+                point = vOutlierKeys[i].pt / imageScale;
+                float px = vOutlierKeys[i].pt.x / imageScale;
+                float py = vOutlierKeys[i].pt.y / imageScale;
+                pt1.x = px-r; pt1.y = py-r;
+                pt2.x = px+r; pt2.y = py+r;
+            }
+            else
+            {
+                point = vOutlierKeys[i].pt;
+                pt1.x = vOutlierKeys[i].pt.x-r; pt1.y = vOutlierKeys[i].pt.y-r;
+                pt2.x = vOutlierKeys[i].pt.x+r; pt2.y = vOutlierKeys[i].pt.y+r;
+            }
+
+            // Draw Red Rectangle and Circle for Outliers
+            cv::rectangle(im, pt1, pt2, cv::Scalar(0,0,255));
+            cv::circle(im, point, 2, cv::Scalar(0,0,255), -1);
+        }
     }
 
     cv::Mat imWithInfo;
@@ -426,8 +452,12 @@ void FrameDrawer::Update(Tracking *pTracker)
                 }
                 else
                 {
-                    mvpOutlierMPs.push_back(pMP);
-                    mvOutlierKeys.push_back(mvCurrentKeys[i]);
+                    // RDFP-SLAM: Only visualize outliers tagged by Flow Consistency Check
+                    if (mvCurrentKeys[i].class_id == -99)
+                    {
+                        mvpOutlierMPs.push_back(pMP);
+                        mvOutlierKeys.push_back(mvCurrentKeys[i]);
+                    }
                 }
             }
         }

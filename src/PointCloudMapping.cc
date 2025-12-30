@@ -103,6 +103,19 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
     
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr pPointCloud(new pcl::PointCloud<pcl::PointXYZRGBA>);
     
+    // DEBUG: Check mask propagation - Moved outside loop to guarantee execution
+    static int debug_print_count = 0;
+    if(debug_print_count < 15 && kf->mnId % 5 == 0) {
+        std::cout << "Debug PointCloud: Frame " << kf->mnId << " has " << kf->mvDynamicMask.size() << " masks." << std::endl;
+        std::cout << "Image Depth Size: " << kf->imDepth.size() << std::endl;
+        for(size_t k=0; k<kf->mvDynamicMask.size(); k++) {
+            std::cout << "Mask " << k << " Size: " << kf->mvDynamicMask[k].size() << std::endl;
+            std::string fname = "mask/mask_" + std::to_string(kf->mnId) + "_" + std::to_string(k) + ".png";
+            cv::imwrite(fname, kf->mvDynamicMask[k]);
+        }
+        debug_print_count++;
+    }
+
     // 从深度图生成点云，采样间隔为2像素
     for (int m = 0; m < kf->imDepth.rows; m += 2)
     {
@@ -111,10 +124,18 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
         {
             // Dynamic object filtering
             bool isDynamic = false;
+
             for (const cv::Mat& mask : kf->mvDynamicMask) {
-                if (m < mask.rows && n < mask.cols && mask.at<uchar>(m, n) == 255) {
-                    isDynamic = true;
-                    break;
+                if (mask.empty()) continue; 
+                // Ensure mask size matches? 
+                // if(mask.rows != kf->imDepth.rows) { resize... } -> YOLO mask should be resized. Flow mask is mImGray size.
+                
+                // Safe check bounds
+                if (m < mask.rows && n < mask.cols) {
+                    if(mask.at<uchar>(m, n) == 255) {
+                        isDynamic = true;
+                        break;
+                    }
                 }
             }
             if (isDynamic) continue;
@@ -149,7 +170,7 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
             // 反投影到3D空间
             p.z = d;
             p.x = (n - kf->cx) * p.z / kf->fx;
-            p.y = (m - kf->cy) * p.z / kf->fy;
+            p.y = (m - kf->cy) * p.z / kf->fy; // Flip Y-axis
 
             // 获取颜色信息
             p.b = kf->imLeftRgb.ptr<uchar>(m)[n * 3];
@@ -170,6 +191,7 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
 
 void PointCloudMapping::viewer()
 {
+    // pcl::visualization::CloudViewer viewer("PointCloud"); // Optional: Enable if PCL window is desired
     while (1)
     {
         {
@@ -195,7 +217,7 @@ void PointCloudMapping::viewer()
             if(N == 0)
             {
                 // 如果没有新关键帧，释放锁并等待或sleep
-                lck.unlock(); // 显式释放锁
+                lck.unlock(); 
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
             }
@@ -211,39 +233,44 @@ void PointCloudMapping::viewer()
             if (pKF->isBad())
                 continue;
             
-            // 生成点云
+            // 生成点云 (Note: Uses CheckDynamicMask and m+=2 internally)
             generatePointCloud(pKF);
             
-            // Apply Statistical Outlier Removal (SOR) to reduce ghosting/noise
-            pcl::PointCloud<pcl::PointXYZRGBA>::Ptr pFilteredLocal(new pcl::PointCloud<pcl::PointXYZRGBA>);
-            statistical_filter->setInputCloud(pKF->mptrPointCloud);
-            statistical_filter->filter(*pFilteredLocal);
-
-            // 将点云转换到世界坐标系
+            // 按照 SiyuanYue 逻辑，直接变换并叠加到全局地图
             pcl::PointCloud<pcl::PointXYZRGBA>::Ptr p(new pcl::PointCloud<pcl::PointXYZRGBA>);
+            
+            // PCL transform requires double matrix
             Eigen::Matrix4f Twc_f = pKF->GetPoseInverse().matrix();
             Eigen::Matrix4d Twc_d = Twc_f.cast<double>();
-            pcl::transformPointCloud(*pFilteredLocal, *p, Twc_d);
+            pcl::transformPointCloud(*(pKF->mptrPointCloud), *p, Twc_d);
 
-            // 添加到全局地图
             {
                 std::unique_lock<std::mutex> lck(mMutexGlobalMap);
-                globalMap->insert(globalMap->end(), p->begin(), p->end());
-                
-                // Periodically apply Voxel Grid filtering to prevent memory bloat
-                if (globalMap->size() > 500000) {
-                    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr tmpGlobalMapFilter(new pcl::PointCloud<pcl::PointXYZRGBA>());
-                    voxel->setInputCloud(globalMap);
-                    voxel->filter(*tmpGlobalMapFilter);
-                    globalMap->swap(*tmpGlobalMapFilter);
-                }
+                *globalMap += *p;
             }
         }
+
+        // 滤波 (SiyuanYue method: Continuous Voxel Grid filtering on Global Map)
+        {
+            std::unique_lock<std::mutex> lck(mMutexGlobalMap);
+            
+            // Optional: Statistical removal on global map (commented out in snippet)
+            // statistical_filter->setInputCloud(globalMap);  
+            // statistical_filter->filter(*tmp);
+
+            // Voxel Grid Filter on ENTIRE Global Map every frame
+            // This fuses points and keeps density uniform
+            pcl::PointCloud<pcl::PointXYZRGBA>::Ptr tmp(new pcl::PointCloud<pcl::PointXYZRGBA>);
+            voxel->setInputCloud(globalMap);
+            voxel->filter(*globalMap);
+        }
+        
+        // viewer.showCloud(globalMap); // Optional visualization
         
         // 保存点云到文件（实时更新）
         save();
         
-        std::cout << "点云地图已更新，当前点数: " << globalMap->size() << std::endl;
+        // std::cout << "点云地图已更新，当前点数: " << globalMap->size() << std::endl;
     }
 }
 

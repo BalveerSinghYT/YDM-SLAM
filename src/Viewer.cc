@@ -24,9 +24,9 @@
 namespace ORB_SLAM3
 {
 
-Viewer::Viewer(System* pSystem, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Tracking *pTracking, const string &strSettingPath, Settings* settings):
-    both(false), mpSystem(pSystem), mpFrameDrawer(pFrameDrawer),mpMapDrawer(pMapDrawer), mpTracker(pTracking),
-    mbFinishRequested(false), mbFinished(true), mbStopped(true), mbStopRequested(false)
+Viewer::Viewer(System* pSystem, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Tracking *pTracking, const string &strSettingPath, Settings* settings, const bool bEnableStepByStep):
+    mpSystem(pSystem), mpFrameDrawer(pFrameDrawer),mpMapDrawer(pMapDrawer), mpTracker(pTracking),
+    mbFinishRequested(false), mbFinished(false), mbStopped(true), mbStopRequested(false), mbStepByStep(bEnableStepByStep)
 {
     if(settings){
         newParameterLoader(settings);
@@ -184,7 +184,7 @@ void Viewer::Run()
     pangolin::Var<bool> menuLocalizationMode("menu.Localization Mode",false,true);
     pangolin::Var<bool> menuReset("menu.Reset",false,false);
     pangolin::Var<bool> menuStop("menu.Stop",false,false);
-    pangolin::Var<bool> menuStepByStep("menu.Step By Step",false,true);  // false, true
+    pangolin::Var<bool> menuStepByStep("menu.Step By Step",mbStepByStep,true);  // false, true
     pangolin::Var<bool> menuStep("menu.Step",false,false);
 
     pangolin::Var<bool> menuShowOptLba("menu.Show LBA opt", false, true);
@@ -220,13 +220,9 @@ void Viewer::Run()
     cout << "Starting the Viewer" << endl;
     while(1)
     {
-        cout << "DEBUG: Viewer loop iteration start" << endl;
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        cout << "DEBUG: After glClear" << endl;
 
-        cout << "DEBUG: Before GetCurrentOpenGLCameraMatrix" << endl;
         mpMapDrawer->GetCurrentOpenGLCameraMatrix(Twc,Ow);
-        cout << "DEBUG: After GetCurrentOpenGLCameraMatrix" << endl;
 
         if(mbStopTrack)
         {

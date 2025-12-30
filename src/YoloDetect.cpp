@@ -102,7 +102,7 @@ bool YoloDetection::Detect()
         // Dilate the merged dynamic mask
         if (!mvDynamicArea.empty())
         {
-            cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(11, 11));
+            cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(6, 6));
             cv::dilate(objectMask, objectMask, kernel);
             mvDynamicMask.push_back(objectMask.clone());
         }

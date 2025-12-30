@@ -246,6 +246,10 @@ public:
     std::vector<bool> mvbOutlier;
     int mnCloseMPs;
 
+    // Dynamic Object Mask (from YOLO + Optical Flow)
+    std::vector<cv::Mat> mvDynamicMask;
+    std::vector<cv::Rect2i> mvDynamicArea;
+
     // Keypoints are assigned to cells in a grid to reduce matching complexity when projecting MapPoints.
     static float mfGridElementWidthInv;
     static float mfGridElementHeightInv;

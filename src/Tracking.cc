@@ -1485,6 +1485,10 @@ namespace ORB_SLAM3
     {
         // cout << "GrabImageStereo" << endl;
 
+        // Store previous frame image for Optical Flow
+        if(!mImGray.empty())
+            mLastImGray = mImGray.clone();
+
         mImGray = imRectLeft;
         cv::Mat imGrayRight = imRectRight;
         mImRight = imRectRight;
@@ -1529,6 +1533,10 @@ namespace ORB_SLAM3
         else if (mSensor == System::IMU_STEREO && mpCamera2)
             mCurrentFrame = Frame(mImGray, imGrayRight, timestamp, mpORBextractorLeft, mpORBextractorRight, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera, mpCamera2, mTlr, &mLastFrame, *mpImuCalib);
 
+        // RDFP-SLAM: Check Optical Flow Consistency immediately after Frame creation
+        if(!mLastImGray.empty())
+            CheckFlowConsistency();
+
         // cout << "Incoming frame ended" << endl;
 
         mCurrentFrame.mNameFile = filename;
@@ -1546,8 +1554,12 @@ namespace ORB_SLAM3
         return mCurrentFrame.GetPose();
     }
 
-    Sophus::SE3f Tracking::GrabImageRGBD(const cv::Mat &imRGB, const cv::Mat &imD, const double &timestamp, string filename)
+    Sophus::SE3f Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp, string filename)
     {
+        // Store previous frame image for Optical Flow
+        if(!mImGray.empty())
+            mLastImGray = mImGray.clone();
+
         mImGray = imRGB;
         cv::Mat imDepth = imD;
         
@@ -1570,11 +1582,14 @@ namespace ORB_SLAM3
             mpViewer->mmDetectMap = mpDetector->mmDetectMap;
             mpViewer->mask = mpDetector->mask;
         }
+        // 保存YOLO masks和areas到临时变量，供CheckFlowConsistency使用
+        // 注意：不要清空mpORBextractorLeft的masks，因为CheckFlowConsistency需要它们
         mpDetector->mvDynamicArea.clear();
         mpDetector->mmDetectMap.clear();
         mpDetector->mask.release();
         mpDetector->mvDynamicMask.clear();
 
+        // 灰度转换
         if (mImGray.channels() == 3)
         {
             if (mbRGB)
@@ -1590,6 +1605,10 @@ namespace ORB_SLAM3
                 cvtColor(mImGray, mImGray, cv::COLOR_BGRA2GRAY);
         }
 
+        // **新架构：光流独立检测动态点（在灰度转换之后）**
+        if(!mLastImGray.empty())
+            GlobalFlowDynamicDetection();
+
         if ((fabs(mDepthMapFactor - 1.0f) > 1e-5) || imDepth.type() != CV_32F)
             imDepth.convertTo(imDepth, CV_32F, mDepthMapFactor);
 
@@ -1597,6 +1616,10 @@ namespace ORB_SLAM3
             mCurrentFrame = Frame(mImGray, imDepth, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera);
         else if (mSensor == System::IMU_RGBD)
             mCurrentFrame = Frame(mImGray, imDepth, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera, &mLastFrame, *mpImuCalib);
+
+        // RDFP-SLAM: Check Optical Flow Consistency immediately after Frame creation
+        if(!mLastImGray.empty())
+            CheckFlowConsistency();
 
         mCurrentFrame.mNameFile = filename;
         mCurrentFrame.mnDataset = mnNumDataset;
@@ -1612,6 +1635,10 @@ namespace ORB_SLAM3
 
     Sophus::SE3f Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp, string filename)
     {
+        // Store previous frame image for Optical Flow
+        if(!mImGray.empty())
+            mLastImGray = mImGray.clone();
+
         mImGray = im;
         if (mImGray.channels() == 3)
         {
@@ -1642,8 +1669,14 @@ namespace ORB_SLAM3
                 mCurrentFrame = Frame(mImGray, timestamp, mpIniORBextractor, mpORBVocabulary, mpCamera, mDistCoef, mbf, mThDepth, &mLastFrame, *mpImuCalib);
             }
             else
+            {
                 mCurrentFrame = Frame(mImGray, timestamp, mpORBextractorLeft, mpORBVocabulary, mpCamera, mDistCoef, mbf, mThDepth, &mLastFrame, *mpImuCalib);
+            }
         }
+
+        // RDFP-SLAM: Check Optical Flow Consistency immediately after Frame creation
+        if(!mLastImGray.empty())
+            CheckFlowConsistency();
 
         if (mState == NO_IMAGES_YET)
             t0 = timestamp;
@@ -2182,7 +2215,10 @@ namespace ORB_SLAM3
             }
 
             if (bOK)
+            {
+                CheckFlowConsistency();
                 mState = OK;
+            }
             else if (mState == OK)
             {
                 if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
@@ -3378,8 +3414,9 @@ namespace ORB_SLAM3
         {
             pKF->imLeftRgb = mImRGB.clone();
             pKF->imDepth = mImDepth.clone();
-            pKF->mvDynamicMask = mpORBextractorLeft->mvDynamicMask;
-            pKF->mvDynamicArea = mpORBextractorLeft->mvDynamicArea;
+            // 使用 mCurrentFrame 的 mask，包含光流优化后的结果
+            pKF->mvDynamicMask = mCurrentFrame.mvDynamicMask;
+            pKF->mvDynamicArea = mCurrentFrame.mvDynamicArea;
         }
         
         // 将关键帧传递给点云建图模块（仅用于RGB-D）
@@ -4171,4 +4208,328 @@ namespace ORB_SLAM3
     }
 #endif
 
-} // namespace ORB_SLAM
+// **新增：独立的全局光流动态检测**
+// 目标：在YOLO检测之前，先用光流标记所有动态特征点
+// 原理：对比当前帧和上一帧的所有特征点，检测异常运动
+void Tracking::GlobalFlowDynamicDetection()
+{
+    // 安全检查
+    if(mLastImGray.empty() || mImGray.empty() || mLastFrame.N == 0)
+        return;
+    
+    // 1. 光流追踪：上一帧特征点 → 当前帧位置
+    vector<cv::Point2f> vPtsPrev, vPtsCurr;
+    vPtsPrev.reserve(mLastFrame.N);
+    
+    for(int i=0; i<mLastFrame.N; i++) {
+        vPtsPrev.push_back(mLastFrame.mvKeysUn[i].pt);
+    }
+    
+    vector<uchar> status;
+    vector<float> error;
+    cv::calcOpticalFlowPyrLK(mLastImGray, mImGray, 
+                             vPtsPrev, vPtsCurr, 
+                             status, error,
+                             cv::Size(21, 21), 3);
+    
+    // 2. 计算全局光流中位数（背景运动）
+    vector<float> vFlowU, vFlowV;
+    vFlowU.reserve(mLastFrame.N);
+    vFlowV.reserve(mLastFrame.N);
+    
+    for(size_t i=0; i<vPtsPrev.size(); i++) {
+        if(!status[i]) continue;
+        
+        float u = vPtsCurr[i].x - vPtsPrev[i].x;
+        float v = vPtsCurr[i].y - vPtsPrev[i].y;
+        vFlowU.push_back(u);
+        vFlowV.push_back(v);
+    }
+    
+    if(vFlowU.size() < 10) {
+        std::cout << "GlobalFlow: Too few points (" << vFlowU.size() << "), skipping" << std::endl;
+        return;
+    }
+    
+    std::sort(vFlowU.begin(), vFlowU.end());
+    std::sort(vFlowV.begin(), vFlowV.end());
+    
+    float median_u = vFlowU[vFlowU.size() / 2];
+    float median_v = vFlowV[vFlowV.size() / 2];
+    
+    // 3. 检测outliers并标记为动态点
+    float th_flow = 3.0f;  // 阈值：3像素
+    int nDynamicPoints = 0;
+    
+    for(size_t i=0; i<vPtsPrev.size(); i++) {
+        if(!status[i] || i >= mLastFrame.mvpMapPoints.size()) continue;
+        if(!mLastFrame.mvpMapPoints[i]) continue;
+        
+        float u = vPtsCurr[i].x - vPtsPrev[i].x;
+        float v = vPtsCurr[i].y - vPtsPrev[i].y;
+        
+        float diff_u = u - median_u;
+        float diff_v = v - median_v;
+        float diff = sqrt(diff_u*diff_u + diff_v*diff_v);
+        
+        if(diff > th_flow) {
+            // 标记为动态点 - 直接设置为NULL，在tracking中不再使用
+            mLastFrame.mvpMapPoints[i]->SetBadFlag();
+            mLastFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
+            nDynamicPoints++;
+        }
+    }
+    
+    std::cout << "GlobalFlow: Detected " << nDynamicPoints << " dynamic points (out of " 
+              << vPtsPrev.size() << "), bg_flow=(" << median_u << "," << median_v << ")" << std::endl;
+}
+
+// RDFP-SLAM 核心算法实现：基于光流的动态特征点剔除
+void Tracking::CheckFlowConsistency()
+{
+    // 0. 安全检查
+    // 确保有上一帧图像和当前帧图像用于计算光流，且当前帧有特征点
+    if(mLastImGray.empty() || mImGray.empty() || mCurrentFrame.N == 0)
+        return;
+
+    // 1. 光流跟踪准备
+    // 我们需要把当前帧的所有特征点 (KeyPoints) 分为两部分：
+    // Set Q: 背景点 (Background)，即在 YOLO 动态框之外的点。
+    // Set D: 嫌疑点 (Dynamic Candidates)，即在 YOLO 动态框之内的点。
+    // 我们将计算这所有点的光流，用 Set Q 来估计相机的背景运动，然后用 Set D 来做校验。
+
+    // 获取动态框
+    const std::vector<cv::Rect2i>& vDynamicAreas = mpORBextractorLeft->mvDynamicArea;
+    if(vDynamicAreas.empty()) 
+    {
+        // 如果没有动态框，理论上不需要做剔除，或者假设所有点都是背景
+        // 但为了严谨，我们直接返回
+        return;
+    }
+
+    // 1. 数据准备 (Data Preparation)
+    // 目标：计算当前帧所有特征点在上一帧的对应位置。
+    // 方法：使用 LK 光流法进行反向追踪 (Current -> Previous)。
+    
+    vector<cv::Point2f> vPtsCurr;
+    vPtsCurr.reserve(mCurrentFrame.N);
+    for(int i=0; i<mCurrentFrame.N; i++)
+    {
+        vPtsCurr.push_back(mCurrentFrame.mvKeysUn[i].pt);
+    }
+
+    vector<cv::Point2f> vPtsPrev;
+    vector<uchar> status;
+    vector<float> err;
+
+    // 2. 运行 LK 光流 (Run Optical Flow)
+    // 输入：当前帧 (mImGray) 和 上一帧 (mLastImGray)
+    // 输出：vPtsCurr 中每个点在上一帧的坐标 vPtsPrev
+    cv::calcOpticalFlowPyrLK(mImGray, mLastImGray, vPtsCurr, vPtsPrev, status, err, cv::Size(21,21), 3);
+
+    // 3. 特征点分类 (Set Division) 与 背景光流计算 (Background Flow Calculation)
+    // 集合 Q (Static Set): 位于 YOLO 检测框外部的点，被认为是绝对静态背景。
+    // 集合 D (Dynamic Set): 位于 YOLO 检测框内部的点，是“嫌疑动态”点。
+    
+    
+    
+    // 使用 Median (中位数) 代替 Mean (均值) 以增强鲁棒性，防止背景集混入动态杂点
+    vector<float> vFlowU_Q, vFlowV_Q;
+    vFlowU_Q.reserve(mCurrentFrame.N);
+    vFlowV_Q.reserve(mCurrentFrame.N);
+
+    cout<<"RDFP-SLAM: Debug - CurrentFrame N: "<<mCurrentFrame.N<<endl;
+
+    for(int i=0; i<mCurrentFrame.N; i++)
+    {
+        if(!status[i]) continue; // 光流追踪失败的点跳过
+        
+        cv::Point2f pt_curr = vPtsCurr[i];
+        cv::Point2f pt_prev = vPtsPrev[i];
+
+        bool bInsideMask = false;
+        for(const cv::Rect2i& rect : vDynamicAreas)
+        {
+            if(rect.contains(pt_curr))
+            {
+                bInsideMask = true;
+                break;
+            }
+        }
+
+        // 如果在框外，属于集合 Q (背景点)
+        if(!bInsideMask) 
+        {
+            float u = pt_curr.x - pt_prev.x;
+            float v = pt_curr.y - pt_prev.y;
+            
+            vFlowU_Q.push_back(u);
+            vFlowV_Q.push_back(v);
+        }
+    }
+
+    if(vFlowU_Q.size() < 10) 
+    {
+        std::cout << "RDFP-SLAM: Debug - Too few background points (Q=" << vFlowU_Q.size() << ")" << std::endl;
+        return; 
+    }
+
+    // 计算背景中位数光流 (Background Median Flow)
+    std::sort(vFlowU_Q.begin(), vFlowU_Q.end());
+    std::sort(vFlowV_Q.begin(), vFlowV_Q.end());
+    
+    float median_u = vFlowU_Q[vFlowU_Q.size() / 2];
+    float median_v = vFlowV_Q[vFlowV_Q.size() / 2];
+
+    cout<<"RDFP-SLAM: Debug - median_u: "<<median_u<<endl;
+    cout<<"RDFP-SLAM: Debug - median_v: "<<median_v<<endl;
+
+    // 4. 动态判定与剔除 (Verification & Rejection)
+    // 阈值设定：如果相对速度差大于 3.0 像素，则认为是动态点
+    float th_flow = 3.0f; 
+    int nOutliers = 0;
+    int count_D = 0;
+    float max_diff = 0.0f;
+
+    // RDFP-SLAM: Initialize Flow Mask for Dense Filtering
+    cv::Mat flowMask = cv::Mat::zeros(mImGray.size(), CV_8UC1);
+    
+    // Store outliers grouped by Bounding Box index
+    // vDynamicAreas has size K. outliersPerBox[k] stores points for k-th box.
+    std::vector<std::vector<cv::Point2f>> outliersPerBox(vDynamicAreas.size());
+
+    for(int i=0; i<mCurrentFrame.N; i++)
+    {
+        if(!status[i]) continue;
+
+        cv::Point2f pt_curr = vPtsCurr[i];
+        int boxIdx = -1;
+        for(size_t k=0; k<vDynamicAreas.size(); k++)
+        {
+            if(vDynamicAreas[k].contains(pt_curr))
+            {
+                boxIdx = k;
+                break;
+            }
+        }
+
+        // 仅对集合 D (框内嫌疑点) 进行校验
+        if(boxIdx != -1) 
+        {
+            count_D++;
+            cv::Point2f pt_prev = vPtsPrev[i];
+            float u = pt_curr.x - pt_prev.x;
+            float v = pt_curr.y - pt_prev.y;
+
+            float diff_u = std::abs(u - median_u);
+            float diff_v = std::abs(v - median_v);
+            
+            float current_diff = std::max(diff_u, diff_v);
+            if(current_diff > max_diff) max_diff = current_diff;
+
+            // 剔除逻辑
+            if(diff_u > th_flow || diff_v > th_flow)
+            {
+                // 确实是动态点 (True Dynamic)，进行剔除
+                mCurrentFrame.mvbOutlier[i] = true;
+                
+                // Tag for Viewer: specific flow-based outlier
+                mCurrentFrame.mvKeys[i].class_id = -99;
+                
+                // 同时尝试设置 MapPoint 的坏点标志 (如果有对应的 MapPoint)
+                if(mCurrentFrame.mvpMapPoints[i])
+                {
+                    mCurrentFrame.mvpMapPoints[i]->SetBadFlag();
+                    // mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL); // KEEP ptr for visualization in FrameDrawer
+                }
+                
+                // Collect outlier for Hull computation
+                outliersPerBox[boxIdx].push_back(pt_curr);
+                
+                nOutliers++;
+            }
+        }
+    }
+
+    // **改进策略：基于光流验证的YOLO Mask自适应扩展**
+    // 目标：保留YOLO的完整覆盖，用光流验证运动，自适应调整膨胀大小
+    
+    cv::Mat refinedMask = cv::Mat::zeros(mImGray.size(), CV_8UC1);
+    bool bMaskUpdated = false;
+    
+    // DEBUG: 检查YOLO masks是否可用
+    std::cout << "RDFP-SLAM Debug: vDynamicAreas.size()=" << vDynamicAreas.size() 
+              << ", mpORBextractorLeft->mvDynamicMask.size()=" << mpORBextractorLeft->mvDynamicMask.size() << std::endl;
+    
+    for(size_t k=0; k<vDynamicAreas.size(); k++)
+    {
+        const cv::Rect2i& box = vDynamicAreas[k];
+        int nFlowOutliers = outliersPerBox[k].size();
+        
+        // 获取原始YOLO mask
+        cv::Mat yoloMaskForBox;
+        bool hasYoloMask = (k < mpORBextractorLeft->mvDynamicMask.size() && 
+                           !mpORBextractorLeft->mvDynamicMask[k].empty());
+        
+        if(hasYoloMask) {
+            yoloMaskForBox = mpORBextractorLeft->mvDynamicMask[k].clone();
+        } else {
+            // YOLO mask缺失，跳过此box（提高性能）
+            std::cout << "WARNING: YOLO mask " << k << " missing, skipping this box!" << std::endl;
+            continue;
+        }
+        
+        // 根据光流outlier数量决定扩展程度
+        int kernelSize;
+        const char* motionStatus;
+        
+        if(nFlowOutliers >= 10) {
+            // 高置信度：物体确实在运动，需要大范围扩展覆盖运动模糊
+            kernelSize = 61;  // 大膨胀
+            motionStatus = "HIGH_MOTION";
+            bMaskUpdated = true;
+        } 
+        else if(nFlowOutliers >= 3) {
+            // 中等置信度：部分运动，中等扩展
+            kernelSize = 31;
+            motionStatus = "MEDIUM_MOTION";
+            bMaskUpdated = true;
+        }
+        else if(nFlowOutliers >= 1) {
+            // 低置信度：可能有轻微运动
+            kernelSize = 15;
+            motionStatus = "LOW_MOTION";  
+            bMaskUpdated = true;
+        }
+        else {
+            // 无运动证据：保持YOLO原始结果（可能是误检或静态）
+            kernelSize = 6;  // YOLO原始膨胀大小
+            motionStatus = "NO_MOTION_DETECTED";
+        }
+        
+        // 应用自适应膨胀到YOLO mask
+        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(kernelSize, kernelSize));
+        cv::Mat expandedMask;
+        cv::dilate(yoloMaskForBox, expandedMask, kernel);
+        
+        // 合并到refined mask
+        cv::bitwise_or(refinedMask, expandedMask, refinedMask);
+        
+        std::cout << "RDFP-SLAM Box[" << k << "]: " << motionStatus 
+                  << " (outliers=" << nFlowOutliers << ", kernel=" << kernelSize << ")" << std::endl;
+    }
+    
+    // 用refined mask替换所有YOLO masks
+    if(!vDynamicAreas.empty())
+    {
+        mCurrentFrame.mvDynamicMask.clear();  // 清除原始YOLO masks
+        mCurrentFrame.mvDynamicMask.push_back(refinedMask);  // 添加refined mask
+        
+        std::cout << "RDFP-SLAM Summary: " << vDynamicAreas.size() << " boxes processed, "
+                  << nOutliers << " total outliers, max_diff=" << max_diff
+                  << ", bg_flow=(" << median_u << "," << median_v << ")" << std::endl;
+    }
+}
+
+} // namespace ORB_SLAM3
+

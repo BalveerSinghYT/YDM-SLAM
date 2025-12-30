@@ -22,6 +22,7 @@
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/features2d/features2d.hpp>
+#include <opencv2/video/tracking.hpp>
 
 #include "Viewer.h"
 #include "FrameDrawer.h"
@@ -143,6 +144,7 @@ public:
     Frame mLastFrame;
 
     cv::Mat mImGray;
+    cv::Mat mLastImGray; // For RDFP-SLAM Optical Flow
     cv::Mat mImRGB;
     cv::Mat mImDepth;
 
@@ -202,6 +204,12 @@ protected:
 
     // Main tracking function. It is independent of the input sensor.
     void Track();
+
+    // Geometric Verification for Dynamic Objects
+    // **新增：独立的全局光流动态检测（在YOLO之前运行）**
+    void GlobalFlowDynamicDetection();
+    
+    void CheckFlowConsistency();
 
     // Map initialization for stereo and RGB-D
     void StereoInitialization();
