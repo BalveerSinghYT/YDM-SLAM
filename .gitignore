@@ -57,6 +57,16 @@ Vocabulary/ORBvoc.txt
 build/
 lib/
 
+# Large model artifacts (keep local, do not commit)
+models/*.onnx
+models/*.pt
+
+# Generated pointcloud/visualization outputs
+pcd/
+frames/
+*.gif
+*.mp4
+
 cmake_modules/
 cmake-build-debug/
 
