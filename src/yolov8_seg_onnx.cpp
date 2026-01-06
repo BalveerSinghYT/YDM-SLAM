@@ -15,30 +15,62 @@ bool Yolov8SegOnnx::ReadModel(const std::string& modelPath, bool isCuda, int cud
 	if (_batchSize < 1) _batchSize = 1;
 	try
 	{
+		// Reset options per-load (avoid carrying providers across loads)
+		_OrtSessionOptions = Ort::SessionOptions();
+
 		if (!CheckModelPath(modelPath))
 			return false;
 		std::vector<std::string> available_providers = GetAvailableProviders();
 		auto cuda_available = std::find(available_providers.begin(), available_providers.end(), "CUDAExecutionProvider");
+		bool cuda_requested = isCuda;
+		bool cuda_appended = false;
 
 		if (isCuda && (cuda_available == available_providers.end()))
 		{
 			std::cout << "Your ORT build without GPU. Change to CPU." << std::endl;
 			std::cout << "************* Infer model on CPU! *************" << std::endl;
+			cuda_requested = false;
 		}
 		else if (isCuda && (cuda_available != available_providers.end()))
 		{
-			std::cout << "************* Infer model on GPU! *************" << std::endl;
+			// NOTE: CUDA EP may still fail to load at runtime (missing cuDNN / mismatched CUDA libs).
 #if ORT_API_VERSION < ORT_OLD_VISON
-			OrtCUDAProviderOptions cudaOption;
-			cudaOption.device_id = cudaID;
-			_OrtSessionOptions.AppendExecutionProvider_CUDA(cudaOption);
+			try
+			{
+				OrtCUDAProviderOptions cudaOption;
+				cudaOption.device_id = cudaID;
+				_OrtSessionOptions.AppendExecutionProvider_CUDA(cudaOption);
+				cuda_appended = true;
+			}
+			catch (const Ort::Exception& e)
+			{
+				std::cerr << "[YDM][YOLO] WARNING: Failed to append CUDA EP, fallback to CPU. Reason: " << e.what() << std::endl;
+				cuda_requested = false;
+			}
 #else
 			OrtStatus* status = OrtSessionOptionsAppendExecutionProvider_CUDA(_OrtSessionOptions, cudaID);
-#endif
+			if (status != nullptr)
+			{
+				const char* msg = Ort::GetApi().GetErrorMessage(status);
+				std::cerr << "[YDM][YOLO] WARNING: Failed to append CUDA EP, fallback to CPU. Reason: "
+						  << (msg ? msg : "<unknown>") << std::endl;
+				Ort::GetApi().ReleaseStatus(status);
+				cuda_requested = false;
+			}
+			else
+			{
+				cuda_appended = true;
+			}
+		#endif
+			if (cuda_requested && cuda_appended)
+				std::cout << "************* Infer model on GPU! *************" << std::endl;
+			else
+				std::cout << "************* Infer model on CPU! *************" << std::endl;
 		}
 		else
 		{
 			std::cout << "************* Infer model on CPU! *************" << std::endl;
+			cuda_requested = false;
 		}
 		//
 		_OrtSessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
@@ -47,7 +79,27 @@ bool Yolov8SegOnnx::ReadModel(const std::string& modelPath, bool isCuda, int cud
 		std::wstring model_path(modelPath.begin(), modelPath.end());
 		_OrtSession = new Ort::Session(_OrtEnv, model_path.c_str(), _OrtSessionOptions);
 #else
-		_OrtSession = new Ort::Session(_OrtEnv, modelPath.c_str(), _OrtSessionOptions);
+		try
+		{
+			_OrtSession = new Ort::Session(_OrtEnv, modelPath.c_str(), _OrtSessionOptions);
+		}
+		catch (const Ort::Exception& e)
+		{
+			// If CUDA was requested, a common failure is missing cuDNN / provider shared library load.
+			if (cuda_requested)
+			{
+				std::cerr << "[YDM][YOLO] WARNING: Session creation failed after requesting CUDA; retrying on CPU. Reason: "
+						  << e.what() << std::endl;
+				_OrtSessionOptions = Ort::SessionOptions();
+				_OrtSessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+				_OrtSession = new Ort::Session(_OrtEnv, modelPath.c_str(), _OrtSessionOptions);
+				std::cout << "************* Infer model on CPU! *************" << std::endl;
+			}
+			else
+			{
+				throw;
+			}
+		}
 #endif
 
 		Ort::AllocatorWithDefaultOptions allocator;

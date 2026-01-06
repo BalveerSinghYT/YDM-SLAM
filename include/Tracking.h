@@ -43,6 +43,7 @@
 #include <mutex>
 #include <unordered_set>
 #include "YoloDetect.h"
+#include "DynamicObjectCleaner.h"
 
 namespace ORB_SLAM3
 {
@@ -147,6 +148,19 @@ public:
     cv::Mat mLastImGray; // For RDFP-SLAM Optical Flow
     cv::Mat mImRGB;
     cv::Mat mImDepth;
+    // Depth (meters) for DIO-SLAM-style ego-motion compensation
+    cv::Mat mPrevDepthMeters;
+    cv::Mat mCurrDepthMeters;
+
+    // DIO-SLAM-style dynamic filtering state (current frame)
+    cv::Mat mCurrInstanceIdMask;
+    std::vector<std::string> mCurrInstanceClassNames;
+
+    // Dynamic rigid mask propagation state
+    cv::Mat mPrevDynamicRigidMask;
+    cv::Mat mCurrDynamicRigidMask;
+
+    DynamicObjectCleaner mDynamicObjectCleaner;
 
     // Initialization Variables (Monocular)
     std::vector<int> mvIniLastMatches;
@@ -210,6 +224,15 @@ protected:
     void GlobalFlowDynamicDetection();
     
     void CheckFlowConsistency();
+    
+    // **新增优化：基于深度的 Mask 精化**
+    cv::Mat GetRefinedDynamicMask(const cv::Mat& imDepth, const vector<cv::Rect>& boxes);
+    
+    // **新增优化：综合验证与特征剔除 (Depth Mask + Geometric Veto)**
+    void VerifyAndPruneFeatures();
+
+    // DIO-SLAM Optical Flow Consistency (OFC) refinement for instance masks
+    void RefineDynamicMaskWithOFC();
 
     // Map initialization for stereo and RGB-D
     void StereoInitialization();

@@ -8,11 +8,14 @@
 #include <opencv2/core.hpp> // For cv::Scalar
 #include<time.h>
 #include<opencv2/opencv.hpp>
+#include <chrono>
 
 #include <YoloDetect.h>
 
-// using namespace dnn;
-Yolov8SegOnnx		model;
+// NOTE: Keep the ONNXRuntime-backed model alive for process lifetime.
+// This avoids a known shutdown-time crash where CUDA driver is already shutting down
+// and ORT pinned memory cleanup throws (cudaFreeHost -> "driver shutting down").
+static Yolov8SegOnnx* gYoloSegModel = nullptr;
 YoloDetection::YoloDetection()
 {
     std::cout << "Loading Yolo model..." << std::endl;
@@ -20,7 +23,10 @@ YoloDetection::YoloDetection()
     std::string model_path_seg = "models/yolo11s-seg.onnx";
 
 	// loading model
-    if (model.ReadModel(model_path_seg, true)) {
+    if (!gYoloSegModel)
+        gYoloSegModel = new Yolov8SegOnnx();
+
+    if (gYoloSegModel->ReadModel(model_path_seg, true)) {
 		std:: cout << "read net ok!" << endl;
 	}
     else {
@@ -30,6 +36,18 @@ YoloDetection::YoloDetection()
 
     mvDynamicNames = {"person", "car", "motorbike", "bus", "train", "truck", "boat", "bird", "cat",
                       "dog", "horse", "sheep", "crow", "bear"};
+
+    // Cache palette and kernel once (per-frame rand/srand and kernel alloc are expensive)
+    mColors.reserve(80);
+    std::srand(0);
+    for (int i = 0; i < 80; i++)
+    {
+        int b = std::rand() % 256;
+        int g = std::rand() % 256;
+        int r = std::rand() % 256;
+        mColors.push_back(cv::Scalar(b, g, r));
+    }
+    mDilateKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(6, 6));
 }
 
 YoloDetection::~YoloDetection()
@@ -40,6 +58,16 @@ YoloDetection::~YoloDetection()
 bool YoloDetection::Detect()
 {
 
+    const bool ydm_profile = (std::getenv("YDM_PROFILE") && std::string(std::getenv("YDM_PROFILE")) == "1");
+    int ydm_profile_every = 30;
+    if (const char* env_pe = std::getenv("YDM_PROFILE_EVERY"))
+    {
+        try { ydm_profile_every = std::stoi(std::string(env_pe)); } catch (...) { ydm_profile_every = 30; }
+        if (ydm_profile_every < 1) ydm_profile_every = 1;
+    }
+    static int ydm_detect_calls = 0;
+    const auto ydm_t0_all = std::chrono::steady_clock::now();
+
     // loading image
     cv::Mat img;
     if(mRGB.empty())
@@ -48,62 +76,70 @@ bool YoloDetection::Detect()
         return -1;
     }
     cv:: cvtColor(mRGB, img, cv::COLOR_BGR2RGB);
-    cv:: Mat image = img.clone();
-
-    std::vector<cv::Scalar> color;
-    srand(time(0));
-    for (int i = 0; i < 80; i++) {
-        int b = rand() % 256;
-        int g = rand() % 256;
-        int r = rand() % 256;
-        color.push_back(cv::Scalar(b, g, r));
-    }
+    cv:: Mat image = img; // avoid per-frame clone; OnnxDetect should treat input as read-only
     mvDynamicArea.clear();
     mvDynamicMask.clear();
     mmDetectMap.clear();
 
     std::vector<OutputParams> result;
     objectMask = cv::Mat::zeros(image.size(), CV_8UC1);
+    mInstanceIdMask = cv::Mat::zeros(image.size(), CV_32SC1);
+    mvInstanceClassNames.clear();
     // std:: cout<< "objectMask size: " << objectMask.size() << " image size: " << image.size() << endl;
-    if (model.OnnxDetect(image, result)) {
+
+    const auto ydm_t0_infer = std::chrono::steady_clock::now();
+    if (gYoloSegModel && gYoloSegModel->OnnxDetect(image, result)) {
+        const auto ydm_t1_infer = std::chrono::steady_clock::now();
         mask = cv::Mat::zeros(image.size(), CV_8UC3);
         for (int i = 0; i < result.size(); i++) {
             int left, top;
-            int color_num = i;
             if (result[i].box.area() > 0) {
-                rectangle(img, result[i].box, color[result[i].id], 2, 8);
+                rectangle(img, result[i].box, mColors[result[i].id % (int)mColors.size()], 2, 8);
                 left = result[i].box.x;
                 top = result[i].box.y;
             }
             if (result[i].rotatedBox.size.width * result[i].rotatedBox.size.height > 0) {
-                DrawRotatedBox(img, result[i].rotatedBox, color[result[i].id], 2);
+                DrawRotatedBox(img, result[i].rotatedBox, mColors[result[i].id % (int)mColors.size()], 2);
                 left = result[i].rotatedBox.center.x;
                 top = result[i].rotatedBox.center.y;
             }
             
             // add masked image for visualization
             if (result[i].boxMask.rows && result[i].boxMask.cols > 0){
-                mask(result[i].box).setTo(color[result[i].id], result[i].boxMask);
+                mask(result[i].box).setTo(mColors[result[i].id % (int)mColors.size()], result[i].boxMask);
             }
 
             // Safety check for class index
-            if (result[i].id >= 0 && result[i].id < model._className.size()) {
-                if (count(mvDynamicNames.begin(), mvDynamicNames.end(), model._className[result[i].id])){
-                    objectMask(result[i].box).setTo(cv::Scalar(255, 255, 255), result[i].boxMask);
+            if (gYoloSegModel && result[i].id >= 0 && result[i].id < gYoloSegModel->_className.size()) {
+                const std::string &cls = gYoloSegModel->_className[result[i].id];
+
+                // Instance-level outputs: assign IDs for ALL detected instances that have a valid mask
+                if (result[i].box.area() > 0 && result[i].boxMask.rows && result[i].boxMask.cols > 0)
+                {
+                    const int instanceId = static_cast<int>(mvInstanceClassNames.size()) + 1;
+                    mvInstanceClassNames.push_back(cls);
+                    mInstanceIdMask(result[i].box).setTo(instanceId, result[i].boxMask);
+                }
+
+                // Dynamic-only outputs kept for existing pipeline
+                if (count(mvDynamicNames.begin(), mvDynamicNames.end(), cls))
+                {
+                    if (result[i].box.area() > 0 && result[i].boxMask.rows && result[i].boxMask.cols > 0)
+                        objectMask(result[i].box).setTo(cv::Scalar(255, 255, 255), result[i].boxMask);
+
                     cv::Rect2i DynamicArea(left, top, (result[i].box.width), (result[i].box.height));
                     mvDynamicArea.push_back(DynamicArea);
                 }
                 
                 cv:: Rect2i DetectArea(left, top, (result[i].box.width), (result[i].box.height));
-                mmDetectMap[model._className[result[i].id]].push_back(DetectArea);
+                mmDetectMap[gYoloSegModel->_className[result[i].id]].push_back(DetectArea);
             }
         }
 
         // Dilate the merged dynamic mask
         if (!mvDynamicArea.empty())
         {
-            cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(6, 6));
-            cv::dilate(objectMask, objectMask, kernel);
+            cv::dilate(objectMask, objectMask, mDilateKernel);
             mvDynamicMask.push_back(objectMask.clone());
         }
         else
@@ -114,6 +150,20 @@ bool YoloDetection::Detect()
     }
     else
         cout << "Detect Failed!" << endl;
+
+    // Optional profiling output (rate-limited)
+    ydm_detect_calls++;
+    if (ydm_profile && (ydm_detect_calls % ydm_profile_every) == 0)
+    {
+        const auto ydm_t1_all = std::chrono::steady_clock::now();
+        const double ms_infer = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(ydm_t1_all - ydm_t0_infer).count();
+        const double ms_total = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(ydm_t1_all - ydm_t0_all).count();
+        std::cout << "[YDM][YOLO] call=" << ydm_detect_calls
+                  << " infer~=" << ms_infer << "ms"
+                  << " total=" << ms_total << "ms"
+                  << " det=" << result.size()
+                  << std::endl;
+    }
     
     return true;
 }

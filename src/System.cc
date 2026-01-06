@@ -20,6 +20,8 @@
 
 #include "System.h"
 #include "Converter.h"
+#include <cstdlib>
+#include <string>
 #include <thread>
 #include <pangolin/pangolin.h>
 #include <iomanip>
@@ -187,20 +189,30 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
     // Yolo
     mpDetector = new YoloDetection();
     
-    // Point Cloud Mapping (仅用于RGB-D传感器)
-    if(mSensor == RGBD || mSensor == IMU_RGBD)
+    // Point Cloud Mapping (optional)
+    // Enable with: export YDM_ENABLE_PCL_MAPPING=1
+    mpPointCloudMapping = nullptr;
+    const bool enablePclMapping = (std::getenv("YDM_ENABLE_PCL_MAPPING") && std::string(std::getenv("YDM_ENABLE_PCL_MAPPING")) == "1");
+    if(enablePclMapping && (mSensor == RGBD || mSensor == IMU_RGBD))
     {
         float depthMapFactor = 1000.0f;
         if(settings_)
             depthMapFactor = settings_->depthMapFactor();
-            
-        // 参数: 体素滤波分辨率, 统计滤波邻域点数, 统计滤波标准差倍数, 深度图因子
-        mpPointCloudMapping = new PointCloudMapping(0.01, 50, 2.0, depthMapFactor);
-        std::cout << "点云建图模块已初始化" << std::endl;
+
+        // Optional tuning via env vars
+        double resolution = 0.01;
+        double meank = 50.0;
+        double thresh = 2.0;
+        if(const char* e = std::getenv("YDM_PCD_VOXEL_RES")) { try { resolution = std::stod(std::string(e)); } catch(...) {} }
+        if(const char* e = std::getenv("YDM_PCD_SOR_MEANK")) { try { meank = std::stod(std::string(e)); } catch(...) {} }
+        if(const char* e = std::getenv("YDM_PCD_SOR_STD")) { try { thresh = std::stod(std::string(e)); } catch(...) {} }
+
+        mpPointCloudMapping = new PointCloudMapping(resolution, meank, thresh, depthMapFactor);
+        std::cout << "点云建图模块已启用：默认每20帧输出一次 ./pcd/kf_*.pcd（世界坐标）；如需合并全局 result.pcd，设置 YDM_PCD_GLOBAL=1" << std::endl;
     }
     else
     {
-        mpPointCloudMapping = nullptr;
+        std::cout << "点云建图模块已禁用（需要时 export YDM_ENABLE_PCL_MAPPING=1）" << std::endl;
     }
 
     //Create Drawers. These are used by the Viewer
@@ -548,6 +560,8 @@ void System::Shutdown()
 {
     {
         unique_lock<mutex> lock(mMutexReset);
+        if(mbShutDown)
+            return;
         mbShutDown = true;
     }
 
@@ -568,27 +582,34 @@ void System::Shutdown()
         while(!mpViewer->isFinished())
             usleep(5000);
     }*/
+        if(mpViewer)
+        {
+            mpViewer->RequestFinish();
 
-    // Wait until all thread have effectively stopped
-    /*while(!mpLocalMapper->isFinished() || !mpLoopCloser->isFinished() || mpLoopCloser->isRunningGBA())
-    {
-        if(!mpLocalMapper->isFinished())
-            cout << "mpLocalMapper is not finished" << endl;*/
+            // If Shutdown is called from the viewer thread (e.g. menu.Stop),
+            // do not wait for the viewer to finish here to avoid deadlock.
+            const bool calledFromViewerThread = (mptViewer && std::this_thread::get_id() == mptViewer->get_id());
+            if(!calledFromViewerThread)
+            {
+                while(!mpViewer->isFinished())
+                    usleep(5000);
+            }
+        }
         /*if(!mpLoopCloser->isFinished())
             cout << "mpLoopCloser is not finished" << endl;
-        if(mpLoopCloser->isRunningGBA()){
-            cout << "mpLoopCloser is running GBA" << endl;
-            cout << "break anyway..." << endl;
-            break;
-        }*/
-        /*usleep(5000);
-    }*/
+        while(!mpLocalMapper->isFinished() || !mpLoopCloser->isFinished() || mpLoopCloser->isRunningGBA())
+        {
+            usleep(5000);
+        }
 
-    if(!mStrSaveAtlasToFile.empty())
-    {
-        Verbose::PrintMess("Atlas saving to file " + mStrSaveAtlasToFile, Verbose::VERBOSITY_NORMAL);
-        SaveAtlas(FileType::BINARY_FILE);
-    }
+        // Join threads to guarantee they are not running during destruction.
+        const auto curId = std::this_thread::get_id();
+        if(mptLocalMapping && mptLocalMapping->joinable())
+            mptLocalMapping->join();
+        if(mptLoopClosing && mptLoopClosing->joinable())
+            mptLoopClosing->join();
+        if(mptViewer && mptViewer->joinable() && mptViewer->get_id() != curId)
+            mptViewer->join();
 
     /*if(mpViewer)
         pangolin::BindToContext("ORB-SLAM2: Map Viewer");*/

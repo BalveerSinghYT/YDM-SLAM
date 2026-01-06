@@ -17,6 +17,12 @@
 #include <pcl/visualization/cloud_viewer.h>
 
 #include <iostream>
+#include <cstdlib>
+#include <string>
+#include <iomanip>
+#include <sstream>
+#include <cerrno>
+#include <sys/stat.h>
 
 namespace ORB_SLAM3
 {
@@ -51,13 +57,25 @@ PointCloudMapping::PointCloudMapping(double resolution_, double meank_, double t
 
 void PointCloudMapping::shutdown()
 {
+    bool doJoin = false;
     {
         std::unique_lock<std::mutex> lck(shutDownMutex);
-        shutDownFlag = true;
-        keyFrameUpdated.notify_one();
+        if(!shutDownFlag)
+        {
+            shutDownFlag = true;
+            keyFrameUpdated.notify_one();
+        }
+        doJoin = (viewerThread && viewerThread->joinable());
     }
-    viewerThread->join();
+
+    if(doJoin)
+        viewerThread->join();
+
+    // Saving is safe to call multiple times due to empty-cloud guard.
     save();
+
+    if(!(std::getenv("YDM_PCD_GLOBAL") && std::string(std::getenv("YDM_PCD_GLOBAL")) == "1"))
+        std::cout << "PointCloudMapping: 已输出关键帧点云到 ./pcd/kf_*.pcd（默认模式）" << std::endl;
 }
 
 void PointCloudMapping::Clear()
@@ -100,15 +118,23 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
     // 检查图像数据有效性
     if (kf->imLeftRgb.empty() || kf->imDepth.empty())
         return;
+
+    const int rgbChannels = kf->imLeftRgb.channels();
+    if (!(rgbChannels == 1 || rgbChannels == 3 || rgbChannels == 4))
+        return;
     
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr pPointCloud(new pcl::PointCloud<pcl::PointXYZRGBA>);
     
-    // DEBUG: Check mask propagation - Moved outside loop to guarantee execution
+    // DEBUG: Check mask propagation
+    // NOTE: Printing and especially cv::imwrite() are very expensive; keep them off by default.
+    const bool ydm_pcd_debug = (std::getenv("YDM_PCD_DEBUG") && std::string(std::getenv("YDM_PCD_DEBUG")) == "1");
     static int debug_print_count = 0;
-    if(debug_print_count < 15 && kf->mnId % 5 == 0) {
+    if (ydm_pcd_debug && debug_print_count < 15 && kf->mnId % 5 == 0)
+    {
         std::cout << "Debug PointCloud: Frame " << kf->mnId << " has " << kf->mvDynamicMask.size() << " masks." << std::endl;
         std::cout << "Image Depth Size: " << kf->imDepth.size() << std::endl;
-        for(size_t k=0; k<kf->mvDynamicMask.size(); k++) {
+        for (size_t k = 0; k < kf->mvDynamicMask.size(); k++)
+        {
             std::cout << "Mask " << k << " Size: " << kf->mvDynamicMask[k].size() << std::endl;
             std::string fname = "mask/mask_" + std::to_string(kf->mnId) + "_" + std::to_string(k) + ".png";
             cv::imwrite(fname, kf->mvDynamicMask[k]);
@@ -173,9 +199,27 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
             p.y = (m - kf->cy) * p.z / kf->fy; // Flip Y-axis
 
             // 获取颜色信息
-            p.b = kf->imLeftRgb.ptr<uchar>(m)[n * 3];
-            p.g = kf->imLeftRgb.ptr<uchar>(m)[n * 3 + 1];
-            p.r = kf->imLeftRgb.ptr<uchar>(m)[n * 3 + 2];
+            if (rgbChannels == 3)
+            {
+                const uchar* row = kf->imLeftRgb.ptr<uchar>(m);
+                p.b = row[n * 3 + 0];
+                p.g = row[n * 3 + 1];
+                p.r = row[n * 3 + 2];
+            }
+            else if (rgbChannels == 4)
+            {
+                const uchar* row = kf->imLeftRgb.ptr<uchar>(m);
+                p.b = row[n * 4 + 0];
+                p.g = row[n * 4 + 1];
+                p.r = row[n * 4 + 2];
+            }
+            else
+            {
+                const uchar v = kf->imLeftRgb.ptr<uchar>(m)[n];
+                p.r = v;
+                p.g = v;
+                p.b = v;
+            }
 
             pPointCloud->points.push_back(p);
         }
@@ -192,6 +236,10 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
 void PointCloudMapping::viewer()
 {
     // pcl::visualization::CloudViewer viewer("PointCloud"); // Optional: Enable if PCL window is desired
+    const bool enableGlobalMerge = (std::getenv("YDM_PCD_GLOBAL") && std::string(std::getenv("YDM_PCD_GLOBAL")) == "1");
+    // Default: dump one PCD every N keyframes (to reduce IO)
+    const int dumpStride = 5;
+    bool ensuredDir = false;
     while (1)
     {
         {
@@ -233,42 +281,65 @@ void PointCloudMapping::viewer()
             if (pKF->isBad())
                 continue;
             
-            // 生成点云 (Note: Uses CheckDynamicMask and m+=2 internally)
+            // 生成点云 (Note: Uses CheckDynamicMask and mask+=2 internally)
             generatePointCloud(pKF);
+
+            if(!pKF->mptrPointCloud || pKF->mptrPointCloud->empty())
+                continue;
             
             // 按照 SiyuanYue 逻辑，直接变换并叠加到全局地图
             pcl::PointCloud<pcl::PointXYZRGBA>::Ptr p(new pcl::PointCloud<pcl::PointXYZRGBA>);
             
-            // PCL transform requires double matrix
+            // Use the canonical float overload to avoid alignment/ABI pitfalls
             Eigen::Matrix4f Twc_f = pKF->GetPoseInverse().matrix();
-            Eigen::Matrix4d Twc_d = Twc_f.cast<double>();
-            pcl::transformPointCloud(*(pKF->mptrPointCloud), *p, Twc_d);
+            pcl::transformPointCloud(*(pKF->mptrPointCloud), *p, Twc_f);
 
+            // Default mode: write per-keyframe PCDs (much safer than merging into a huge aligned vector)
+            if(!enableGlobalMerge)
+            {
+                if (dumpStride > 1 && (static_cast<int>(pKF->mnId) % dumpStride) != 0)
+                    continue;
+
+                if(!ensuredDir)
+                {
+                    if(::mkdir("pcd", 0755) != 0 && errno != EEXIST)
+                        std::cerr << "WARNING: Failed to create ./pcd directory (errno=" << errno << ")" << std::endl;
+                    ensuredDir = true;
+                }
+
+                std::ostringstream oss;
+                oss << "pcd/kf_" << std::setw(6) << std::setfill('0') << pKF->mnId << ".pcd";
+                try
+                {
+                    pcl::io::savePCDFileBinaryCompressed(oss.str(), *p);
+                }
+                catch(const pcl::IOException &e)
+                {
+                    std::cerr << "WARNING: Failed to save " << oss.str() << ": " << e.what() << std::endl;
+                }
+                continue;
+            }
+
+            // Merge both operations under a single lock to avoid race conditions
             {
                 std::unique_lock<std::mutex> lck(mMutexGlobalMap);
+                
+                // Add new points to global map
                 *globalMap += *p;
+                
+                // Voxel Grid Filter on ENTIRE Global Map
+                // IMPORTANT: Must use a temporary cloud, cannot filter in-place
+                pcl::PointCloud<pcl::PointXYZRGBA>::Ptr tmp(new pcl::PointCloud<pcl::PointXYZRGBA>);
+                voxel->setInputCloud(globalMap);
+                voxel->filter(*tmp);
+                globalMap->swap(*tmp);
             }
-        }
-
-        // 滤波 (SiyuanYue method: Continuous Voxel Grid filtering on Global Map)
-        {
-            std::unique_lock<std::mutex> lck(mMutexGlobalMap);
-            
-            // Optional: Statistical removal on global map (commented out in snippet)
-            // statistical_filter->setInputCloud(globalMap);  
-            // statistical_filter->filter(*tmp);
-
-            // Voxel Grid Filter on ENTIRE Global Map every frame
-            // This fuses points and keeps density uniform
-            pcl::PointCloud<pcl::PointXYZRGBA>::Ptr tmp(new pcl::PointCloud<pcl::PointXYZRGBA>);
-            voxel->setInputCloud(globalMap);
-            voxel->filter(*globalMap);
         }
         
         // viewer.showCloud(globalMap); // Optional visualization
         
-        // 保存点云到文件（实时更新）
-        save();
+        // 保存点云到文件（已禁用以提升性能）
+        // save();
         
         // std::cout << "点云地图已更新，当前点数: " << globalMap->size() << std::endl;
     }
@@ -276,8 +347,44 @@ void PointCloudMapping::viewer()
 
 void PointCloudMapping::save()
 {
-    std::unique_lock<std::mutex> lck(mMutexGlobalMap);
-    pcl::io::savePCDFile("result.pcd", *globalMap);
+    // Always write result.pcd to current working directory.
+    // If the point cloud is empty, write a minimal valid PCD file so downstream scripts don't fail.
+    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloudSnapshot;
+    {
+        std::unique_lock<std::mutex> lck(mMutexGlobalMap);
+        cloudSnapshot = globalMap;
+    }
+
+    if(!cloudSnapshot || cloudSnapshot->empty())
+    {
+        std::ofstream out("result.pcd", std::ios::out | std::ios::trunc);
+        if(!out.is_open())
+        {
+            std::cerr << "WARNING: Failed to create result.pcd (cannot open for writing)" << std::endl;
+            return;
+        }
+        out << "# .PCD v0.7 - Point Cloud Data file format\n";
+        out << "VERSION 0.7\n";
+        out << "FIELDS x y z rgb\n";
+        out << "SIZE 4 4 4 4\n";
+        out << "TYPE F F F F\n";
+        out << "COUNT 1 1 1 1\n";
+        out << "WIDTH 0\n";
+        out << "HEIGHT 1\n";
+        out << "VIEWPOINT 0 0 0 1 0 0 0\n";
+        out << "POINTS 0\n";
+        out << "DATA ascii\n";
+        return;
+    }
+
+    try
+    {
+        pcl::io::savePCDFile("result.pcd", *cloudSnapshot);
+    }
+    catch(const pcl::IOException &e)
+    {
+        std::cerr << "WARNING: Failed to save result.pcd: " << e.what() << std::endl;
+    }
 }
 
 void PointCloudMapping::updatecloud(Map &curMap)

@@ -1,0 +1,116 @@
+#ifndef DYNAMIC_OBJECT_CLEANER_H
+#define DYNAMIC_OBJECT_CLEANER_H
+
+#include <opencv2/core/core.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+
+#include <vector>
+#include <string>
+
+#include <Eigen/Core>
+
+#include "FlowNetOnnx.h"
+#include "sophus/se3.hpp"
+
+namespace ORB_SLAM3
+{
+
+class DynamicObjectCleaner
+{
+public:
+    struct Params
+    {
+        // Residual threshold: thr = max(minPx, median + sigmaScale * 1.4826 * MAD)
+        float residualSigmaScale = 2.5f;
+        float residualMinPx = 1.0f;
+
+        // Iterative robust refinement steps (DIO-SLAM style)
+        int residualIterations = 7;
+
+        // Instance decision based on overlap ratio (DIO-SLAM prompt):
+        // Let N=|Inst|, M=|Motion|, L=|Inst ∩ Motion|; dynamic if L/min(N,M) > overlapDynamicTh
+        float overlapDynamicTh = 0.70f;
+
+        // Morphology for refined mask
+        int refineDilate = 3; // radius in pixels (approx)
+
+        // Optional: propagate previous dynamic rigid mask using dense flow
+        bool enableMaskPropagation = true;
+        int propagationDilate = 1;
+
+        // Also prune keypoints by residual even if outside refined instance masks
+        bool pruneByResidualOutsideInstances = false;
+
+        // Sampling stride for robust stats (outside semantic region)
+        int statsStride = 4;
+    };
+
+public:
+    DynamicObjectCleaner();
+
+    bool EnsureFlowNetLoaded();
+
+    // Compute refined dynamic mask and mark outlier keypoints.
+    // - prev/curr gray: CV_8U (1 channel)
+    // - prevDepthMeters: CV_32F depth in meters (same size as images)
+    // - TcwPrev/TcwCurr: camera pose (world -> camera)
+    // - instanceIdMask: CV_32SC1 (0=bg, 1..N=instance id)
+    // - instanceClassNames: size N, index (id-1) -> class name
+    // - prevDynamicRigidMask: optional CV_8U (0/255), previous-frame dynamic rigid mask for propagation
+    bool CleanRGBD(const cv::Mat &prevGray,
+                  const cv::Mat &prevDepthMeters,
+                  const Sophus::SE3f &TcwPrev,
+                  const cv::Mat &currGray,
+                  const cv::Mat &currDepthMeters,
+                  const Sophus::SE3f &TcwCurr,
+                  const Eigen::Matrix3f &K,
+                  const cv::Mat &instanceIdMask,
+                  const std::vector<std::string> &instanceClassNames,
+                  const cv::Mat &prevDynamicRigidMask,
+                  const std::vector<cv::KeyPoint> &currKeypoints,
+                  std::vector<bool> &outlierFlags,
+                  cv::Mat &outRefinedDynamicMask,
+                  cv::Mat &outDynamicRigidMask);
+
+    void SetParams(const Params &p) { mParams = p; }
+    const Params &GetParams() const { return mParams; }
+
+private:
+    static float Median(std::vector<float> &v);
+    static float MedianAbsDev(std::vector<float> &v, float med);
+
+    static bool IsNonRigidClass(const std::string &cls);
+    static bool IsRigidClass(const std::string &cls);
+
+    static cv::Mat BuildNonRigidMaskFromInstances(const cv::Mat &instanceIdMask,
+                                                  const std::vector<std::string> &instanceClassNames);
+
+    static void ComputeMotionMaskIterative(const cv::Mat &residual,
+                                           const cv::Mat &validMask,
+                                           int iterations,
+                                           float sigmaScale,
+                                           float minPx,
+                                           cv::Mat &outMotionMask,
+                                           float &outThr);
+
+    static cv::Mat PropagateMaskWithFlow(const cv::Mat &prevMask,
+                                         const cv::Mat &flowPrevToCurr,
+                                         const cv::Size &size);
+
+    void ComputeEgoFlow(const cv::Mat &prevDepthMeters,
+                        const Sophus::SE3f &TcwPrev,
+                        const Sophus::SE3f &TcwCurr,
+                        const Eigen::Matrix3f &K,
+                        cv::Mat &egoFlow,
+                        cv::Mat &validMask) const;
+
+private:
+    Params mParams;
+
+    FlowNetOnnx mFlowNet;
+    bool mFlowNetLoaded = false;
+};
+
+} // namespace ORB_SLAM3
+
+#endif

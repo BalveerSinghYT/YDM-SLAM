@@ -876,6 +876,9 @@ namespace ORB_SLAM3
             bool hasDynamicMask = !mvDynamicMask.empty();
             bool hasDynamicArea = !mvDynamicArea.empty();
 
+            /*
+            // RDFP-SLAM: Disable ALL early filtering in ORBextractor. 
+            // We want to extract features everywhere and verify them later in Tracking::VerifyAndPruneFeatures.
             if (hasDynamicMask || hasDynamicArea)
             {
                 vector<cv::KeyPoint> vFilteredKeys;
@@ -905,7 +908,7 @@ namespace ORB_SLAM3
                         }
                     }
                     
-                    /* 
+                    
                     // RDFP-SLAM: Disable Box filtering. We want to verify these points in Tracking.
                     if (!Find && hasDynamicArea)
                     {
@@ -918,7 +921,7 @@ namespace ORB_SLAM3
                             }
                         }
                     }
-                    */
+                    
 
                     if (!Find)
                     {
@@ -927,6 +930,7 @@ namespace ORB_SLAM3
                 }
                 vToDistributeKeys = vFilteredKeys;
             }
+            */
 
             vector<KeyPoint> & keypoints = allKeypoints[level];
             keypoints.reserve(nfeatures);

@@ -43,7 +43,8 @@ add_definitions(-w)
 LIST(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_modules)
 
 # Set the ONNXRUNTIME_DIR
-SET (ONNXRUNTIME_DIR /home/max/DynamicSLAM/YOLOv8-ORBSLAM/Thirdparty/onnxruntime-linux-x64-gpu-1.9.0)     # Set the path to the ONNX Runtime directory
+# NOTE: FastFlowNet export currently uses opset 18; older ORT builds may fail to load.
+SET (ONNXRUNTIME_DIR /home/max/DynamicSLAM/YOLOv8-ORBSLAM/Thirdparty/onnxruntime-linux-x64-gpu-1.20.1)     # Set the path to the ONNX Runtime directory
 
 # Find OpenCV
 find_package(OpenCV 4.2)
@@ -60,6 +61,7 @@ find_package(Eigen3 3.1.0 REQUIRED)
 find_package(Pangolin REQUIRED)
 find_package(realsense2)
 find_package(PCL REQUIRED)
+find_package(OpenMP)
 
 # Include directories
 include_directories(
@@ -112,6 +114,8 @@ add_library(${PROJECT_NAME} SHARED
         src/YoloDetect.cpp
         src/yolov8_seg_onnx.cpp
         src/yolov8_utils.cpp
+        src/FlowNetOnnx.cpp
+        src/DynamicObjectCleaner.cc
         src/PointCloudMapping.cc
         include/System.h
         include/Tracking.h
@@ -146,6 +150,8 @@ add_library(${PROJECT_NAME} SHARED
         include/YoloDetect.h
         include/yolov8_seg_onnx.h
         include/yolov8_utils.h
+        include/FlowNetOnnx.h
+        include/DynamicObjectCleaner.h
         include/PointCloudMapping.h
         )
 
@@ -163,6 +169,10 @@ target_link_libraries(${PROJECT_NAME}
         -lboost_serialization
         -lcrypto
         )
+
+if(OpenMP_CXX_FOUND)
+        target_link_libraries(${PROJECT_NAME} OpenMP::OpenMP_CXX)
+endif()
 
 # If RealSense SDK is found, add the library and compile examples
 if(realsense2_FOUND)
@@ -216,6 +226,15 @@ target_link_libraries(stereo_kitti ${PROJECT_NAME})
 add_executable(stereo_euroc
         Examples/Stereo/stereo_euroc.cc)
 target_link_libraries(stereo_euroc ${PROJECT_NAME})
+
+# ------------------------------------------------------------
+# Tools
+# ------------------------------------------------------------
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/tools)
+add_executable(flow_infer
+        tools/flow_infer.cc)
+target_link_libraries(flow_infer ${PROJECT_NAME})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/Stereo)
 
 # Add the stereo_tum_vi example
 add_executable(stereo_tum_vi

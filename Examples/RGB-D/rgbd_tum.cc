@@ -146,9 +146,8 @@ int main(int argc, char **argv)
     cout << "median tracking time: " << vTimesTrack[nImages/2] << endl;
     cout << "mean tracking time: " << totaltime/nImages << endl;
 
-    std:: string folderPath = string(argv[3]);
-    std:: string trajectoryPath = folderPath + "/Results" + "/CameraTrajectory.txt";
-    std:: string keyFrameTrajectoryPath = folderPath + "/Results" "/KeyFrameTrajectory.txt";
+    std:: string trajectoryPath = "Txt/CameraTrajectory.txt";
+    std:: string keyFrameTrajectoryPath = "Txt/KeyFrameTrajectory.txt";
 
     // Save camera trajectory
     SLAM.SaveTrajectoryTUM(trajectoryPath);

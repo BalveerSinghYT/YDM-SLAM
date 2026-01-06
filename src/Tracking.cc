@@ -28,7 +28,21 @@
 #include "MLPnPsolver.h"
 #include "GeometricTools.h"
 
+#include <opencv2/calib3d/calib3d.hpp>
+
+#include "FlowNetOnnx.h"
+
 #include <iostream>
+#include <algorithm>
+
+#include <cstdlib>
+#include <iomanip>
+#include <sstream>
+
+#include <cerrno>
+#include <cstring>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include <mutex>
 #include <chrono>
@@ -1560,6 +1574,13 @@ namespace ORB_SLAM3
         if(!mImGray.empty())
             mLastImGray = mImGray.clone();
 
+        // Shift previous depth/mask state for DIO-style processing
+        if(!mCurrDepthMeters.empty())
+            mPrevDepthMeters = mCurrDepthMeters.clone();
+        if(!mCurrDynamicRigidMask.empty())
+            mPrevDynamicRigidMask = mCurrDynamicRigidMask.clone();
+        mCurrDynamicRigidMask.release();
+
         mImGray = imRGB;
         cv::Mat imDepth = imD;
         
@@ -1574,20 +1595,22 @@ namespace ORB_SLAM3
         cv::Mat InputImage;
         InputImage = imRGB.clone();
         mpDetector->GetImage(InputImage);
+        // Always run YOLO every frame.
         mpDetector->Detect();
+
+        // Cache instance-level outputs for DIO-SLAM style logic
+        mCurrInstanceIdMask = mpDetector->mInstanceIdMask.empty() ? cv::Mat() : mpDetector->mInstanceIdMask.clone();
+        mCurrInstanceClassNames = mpDetector->mvInstanceClassNames;
+
+        // Persist results beyond this function call (mpDetector outputs are cleared later).
         mpORBextractorLeft->mvDynamicMask = mpDetector->mvDynamicMask;
         mpORBextractorLeft->mvDynamicArea = mpDetector->mvDynamicArea;
+        if (mpViewer)
         {
             std::unique_lock<std::mutex> lock(mpViewer->mMutexPAFinsh);
             mpViewer->mmDetectMap = mpDetector->mmDetectMap;
             mpViewer->mask = mpDetector->mask;
         }
-        // 保存YOLO masks和areas到临时变量，供CheckFlowConsistency使用
-        // 注意：不要清空mpORBextractorLeft的masks，因为CheckFlowConsistency需要它们
-        mpDetector->mvDynamicArea.clear();
-        mpDetector->mmDetectMap.clear();
-        mpDetector->mask.release();
-        mpDetector->mvDynamicMask.clear();
 
         // 灰度转换
         if (mImGray.channels() == 3)
@@ -1605,21 +1628,18 @@ namespace ORB_SLAM3
                 cvtColor(mImGray, mImGray, cv::COLOR_BGRA2GRAY);
         }
 
-        // **新架构：光流独立检测动态点（在灰度转换之后）**
-        if(!mLastImGray.empty())
-            GlobalFlowDynamicDetection();
-
         if ((fabs(mDepthMapFactor - 1.0f) > 1e-5) || imDepth.type() != CV_32F)
             imDepth.convertTo(imDepth, CV_32F, mDepthMapFactor);
+
+        // Cache current depth (meters) for DIO-SLAM style ego-motion compensation
+        mCurrDepthMeters = imDepth.clone();
 
         if (mSensor == System::RGBD)
             mCurrentFrame = Frame(mImGray, imDepth, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera);
         else if (mSensor == System::IMU_RGBD)
             mCurrentFrame = Frame(mImGray, imDepth, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera, &mLastFrame, *mpImuCalib);
 
-        // RDFP-SLAM: Check Optical Flow Consistency immediately after Frame creation
-        if(!mLastImGray.empty())
-            CheckFlowConsistency();
+        // DIO-SLAM-style pruning is applied inside TrackWithMotionModel() after pose prediction.
 
         mCurrentFrame.mNameFile = filename;
         mCurrentFrame.mnDataset = mnNumDataset;
@@ -1627,7 +1647,12 @@ namespace ORB_SLAM3
 #ifdef REGISTER_TIMES
         vdORBExtract_ms.push_back(mCurrentFrame.mTimeORB_Ext);
 #endif
-
+        // 保存YOLO masks和areas到临时变量，供CheckFlowConsistency使用
+        // 注意：不要清空mpORBextractorLeft的masks，因为CheckFlowConsistency需要它们
+        mpDetector->mvDynamicArea.clear();
+        mpDetector->mmDetectMap.clear();
+        mpDetector->mask.release();
+        mpDetector->mvDynamicMask.clear();
         Track();
 
         return mCurrentFrame.GetPose();
@@ -2216,7 +2241,14 @@ namespace ORB_SLAM3
 
             if (bOK)
             {
-                CheckFlowConsistency();
+                // RGB-D/IMU_RGBD：动态剔除与mask refinement已在 GrabImageRGBD() 中通过
+                // VerifyAndPruneFeatures() 完成。这里再调用 CheckFlowConsistency()
+                // 会用 YOLO 原始 mask（并可能膨胀）覆盖 mCurrentFrame.mvDynamicMask，
+                // 导致点云(PCL)侧仍按 YOLO mask 把“静止的人/物体”剔除。
+                if (mSensor != System::RGBD && mSensor != System::IMU_RGBD)
+                {
+                    CheckFlowConsistency();
+                }
                 mState = OK;
             }
             else if (mState == OK)
@@ -2943,6 +2975,48 @@ namespace ORB_SLAM3
             mCurrentFrame.SetPose(mVelocity * mLastFrame.GetPose());
         }
 
+        // DIO-SLAM style dynamic keypoint filtering (requires predicted pose)
+        if ((mSensor == System::RGBD || mSensor == System::IMU_RGBD) &&
+            !mLastImGray.empty() && !mPrevDepthMeters.empty() &&
+            !mCurrInstanceIdMask.empty() && mCurrInstanceIdMask.type() == CV_32SC1)
+        {
+            std::vector<bool> outFlags;
+            cv::Mat refinedMask;
+            cv::Mat dynamicRigidMask;
+            const Sophus::SE3f TcwPrev = mLastFrame.GetPose();
+            const Sophus::SE3f TcwCurr = mCurrentFrame.GetPose();
+
+            const bool ok = mDynamicObjectCleaner.CleanRGBD(
+                mLastImGray,
+                mPrevDepthMeters,
+                TcwPrev,
+                mImGray,
+                mCurrDepthMeters,
+                TcwCurr,
+                mCurrentFrame.mK_,
+                mCurrInstanceIdMask,
+                mCurrInstanceClassNames,
+                mPrevDynamicRigidMask,
+                mCurrentFrame.mvKeysUn,
+                outFlags,
+                refinedMask,
+                dynamicRigidMask);
+
+            if (ok && !outFlags.empty())
+            {
+                // Mark outliers early so matching utilities will skip them
+                const size_t n = std::min(outFlags.size(), mCurrentFrame.mvbOutlier.size());
+                for (size_t i = 0; i < n; ++i)
+                    if (outFlags[i])
+                        mCurrentFrame.mvbOutlier[i] = true;
+
+                mCurrentFrame.mvDynamicMask.clear();
+                mCurrentFrame.mvDynamicMask.push_back(refinedMask);
+
+                mCurrDynamicRigidMask = dynamicRigidMask.clone();
+            }
+        }
+
         fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint *>(NULL));
 
         // Project points seen in previous frame
@@ -3414,8 +3488,15 @@ namespace ORB_SLAM3
         {
             pKF->imLeftRgb = mImRGB.clone();
             pKF->imDepth = mImDepth.clone();
-            // 使用 mCurrentFrame 的 mask，包含光流优化后的结果
-            pKF->mvDynamicMask = mCurrentFrame.mvDynamicMask;
+            // 使用 mCurrentFrame 的 mask（refined后的最终版本），并做深拷贝
+            // 说明：cv::Mat 默认是浅拷贝（共享底层数据）。这里逐张 clone()，避免后续对 Frame/Viewer
+            // 的 in-place 操作或覆盖导致 KeyFrame 中的 mask 被意外影响。
+            pKF->mvDynamicMask.clear();
+            pKF->mvDynamicMask.reserve(mCurrentFrame.mvDynamicMask.size());
+            for (const cv::Mat &m : mCurrentFrame.mvDynamicMask)
+            {
+                pKF->mvDynamicMask.push_back(m.empty() ? cv::Mat() : m.clone());
+            }
             pKF->mvDynamicArea = mCurrentFrame.mvDynamicArea;
         }
         
@@ -4280,11 +4361,771 @@ void Tracking::GlobalFlowDynamicDetection()
         }
     }
     
-    std::cout << "GlobalFlow: Detected " << nDynamicPoints << " dynamic points (out of " 
-              << vPtsPrev.size() << "), bg_flow=(" << median_u << "," << median_v << ")" << std::endl;
+    // NOTE: Per-frame stdout is very expensive; gate behind YDM_VERBOSE.
+    const bool ydm_verbose = (std::getenv("YDM_VERBOSE") && std::string(std::getenv("YDM_VERBOSE")) == "1");
+    if (ydm_verbose)
+        std::cout << "GlobalFlow: Detected " << nDynamicPoints << " dynamic points (out of "
+                  << vPtsPrev.size() << "), bg_flow=(" << median_u << "," << median_v << ")" << std::endl;
 }
 
-// RDFP-SLAM 核心算法实现：基于光流的动态特征点剔除
+// **新增核心：利用深度图优化 YOLO Mask**
+cv::Mat Tracking::GetRefinedDynamicMask(const cv::Mat& imDepth, const std::vector<cv::Rect>& boxes) {
+    cv::Mat final_mask = cv::Mat::zeros(imDepth.size(), CV_8UC1);  // Updated to CV_8UC1
+    
+    // 如果没有检测框，直接返回空Mask
+    if(boxes.empty()) return final_mask;
+
+    for(const auto& box : boxes) {
+        // 1. 边界检查，防止越界
+        cv::Rect safe_box = box & cv::Rect(0, 0, imDepth.cols, imDepth.rows);
+        if(safe_box.area() <= 0) continue;
+
+        cv::Mat roi_depth = imDepth(safe_box);
+        
+        // 2. 计算物体主体深度 (中位数)
+        std::vector<float> depths;
+        depths.reserve(roi_depth.total());
+        
+        // 优化：使用迭代器遍历
+        for(int i=0; i<roi_depth.rows; i++) {
+            const float* ptr = roi_depth.ptr<float>(i);
+            for(int j=0; j<roi_depth.cols; j++) {
+                float d = ptr[j];
+                // 过滤无效深度和过远深度 (0.1m - 15.0m)
+                if(d > 0.1f && d < 15.0f) {
+                    depths.push_back(d);
+                }
+            }
+        }
+        
+        if(depths.empty()) continue; // 无有效深度
+        
+        // 找中位数
+        size_t n = depths.size() / 2;
+        std::nth_element(depths.begin(), depths.begin() + n, depths.end());
+        float median_d = depths[n];
+        
+        // 3. 深度阈值切割生成 Mask
+        cv::Mat roi_mask = cv::Mat::zeros(safe_box.size(), CV_8UC1);
+        float tolerance = 0.5f; // 深度容差 +/- 0.5m
+        
+        for(int i=0; i<roi_depth.rows; i++) {
+            const float* ptr_d = roi_depth.ptr<float>(i);
+            uchar* ptr_m = roi_mask.ptr<uchar>(i);
+            for(int j=0; j<roi_depth.cols; j++) {
+                if(std::abs(ptr_d[j] - median_d) < tolerance) {
+                    ptr_m[j] = 255;
+                }
+            }
+        }
+        
+        // 4. 将 ROI mask 填回全图 mask (使用 OR 操作以支持重叠框)
+        cv::Mat final_roi = final_mask(safe_box);
+        cv::bitwise_or(final_roi, roi_mask, final_roi);
+    }
+
+    // 5. 全局形态学膨胀 (解决边缘特征点残留)
+    cv::Mat dilated_mask;
+    // 使用 7x7 核进行膨胀
+    cv::dilate(final_mask, dilated_mask, 
+               cv::getStructuringElement(cv::MORPH_RECT, cv::Size(7, 7)));
+               
+    return dilated_mask;
+}
+
+// **新增优化：综合验证与特征剔除**
+void Tracking::VerifyAndPruneFeatures() {
+    // Profiling / logging knobs (env vars)
+    // - YDM_PROFILE=0: disable per-stage timing logs (enabled by default)
+    // - YDM_PROFILE_EVERY=N: print every N frames (default 1)
+    // - YDM_VERBOSE=1: enable verbose logs
+    // - YDM_FLOW_BOX_LOG=1: print per-box flow decisions (can be very slow)
+    const char *env_profile = std::getenv("YDM_PROFILE");
+    const bool ydm_profile = !(env_profile && std::string(env_profile) == "0");
+    int ydm_profile_every = 1;
+    if (const char* env_pe = std::getenv("YDM_PROFILE_EVERY"))
+    {
+        try { ydm_profile_every = std::stoi(std::string(env_pe)); } catch (...) { ydm_profile_every = 1; }
+        if (ydm_profile_every < 1) ydm_profile_every = 1;
+    }
+    const bool ydm_verbose = (std::getenv("YDM_VERBOSE") && std::string(std::getenv("YDM_VERBOSE")) == "1");
+    const bool ydm_flow_box_log = (std::getenv("YDM_FLOW_BOX_LOG") && std::string(std::getenv("YDM_FLOW_BOX_LOG")) == "1");
+
+    const auto ydm_t0_all = std::chrono::steady_clock::now();
+    auto ydm_t = ydm_t0_all;
+    auto ydm_ms_since = [](const std::chrono::steady_clock::time_point &a,
+                           const std::chrono::steady_clock::time_point &b) -> double {
+        return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(b - a).count();
+    };
+
+    // 0. 安全检查
+    // 使用 Tracking 类的 mImDepth 成员，而不是 Frame 的
+    if(mImDepth.empty() || mpORBextractorLeft->mvDynamicArea.empty())
+        return;
+
+    // 重要：mImDepth 在 GrabImageRGBD() 里保存的是原始深度图（常见为 CV_16U），
+    // 但 GetRefinedDynamicMask() 按 CV_32F(米) 读取深度并做阈值切割。
+    // 如果不先转换，会导致 depths 为空/median 深度异常，refined_mask 结果全黑。
+    cv::Mat depth_for_mask = mImDepth;
+    if ((fabs(mDepthMapFactor - 1.0f) > 1e-5) || depth_for_mask.type() != CV_32F)
+        depth_for_mask.convertTo(depth_for_mask, CV_32F, mDepthMapFactor);
+
+    const auto ydm_t_depth = std::chrono::steady_clock::now();
+    const double ydm_ms_depth = ydm_ms_since(ydm_t, ydm_t_depth);
+    ydm_t = ydm_t_depth;
+
+    // Step A0: 以 YOLO 分割 mask 作为“保底动态区域”
+    // 说明：仅用 box 内深度中位数切割可能会选到背景深度（尤其当box里背景像素占比更大），
+    // 从而把真正的动态物体漏掉。这里先把 YOLO mask 做并集，后续再结合深度 refined。
+    cv::Mat yolo_union = cv::Mat::zeros(depth_for_mask.size(), CV_8UC1);
+    if (!mpORBextractorLeft->mvDynamicMask.empty())
+    {
+        for (const cv::Mat &m : mpORBextractorLeft->mvDynamicMask)
+        {
+            if (m.empty())
+                continue;
+
+            cv::Mat m1;
+            if (m.channels() == 1)
+                m1 = m;
+            else
+                cv::cvtColor(m, m1, cv::COLOR_BGR2GRAY);
+
+            if (m1.type() != CV_8UC1)
+                m1.convertTo(m1, CV_8UC1);
+
+            if (m1.size() != yolo_union.size())
+            {
+                cv::Mat resized;
+                cv::resize(m1, resized, yolo_union.size(), 0, 0, cv::INTER_NEAREST);
+                m1 = resized;
+            }
+
+            cv::bitwise_or(yolo_union, m1, yolo_union);
+        }
+    }
+
+    const auto ydm_t_yolo_union = std::chrono::steady_clock::now();
+    const double ydm_ms_yolo_union = ydm_ms_since(ydm_t, ydm_t_yolo_union);
+    ydm_t = ydm_t_yolo_union;
+
+    // Step A: 生成基于深度的精准 Mask
+    // 注意：我们需要将 cv::Rect2f 转换为 cv::Rect 才能传递给 GetRefinedDynamicMask
+    // 或者直接修改 GetRefinedDynamicMask 接受 vector<Rect2i>
+    // 这里我们做个简单的适配
+    std::vector<cv::Rect> vRects;
+    for(const auto& r : mpORBextractorLeft->mvDynamicArea) {
+        vRects.push_back(r);
+    }
+
+    cv::Mat refined_mask = GetRefinedDynamicMask(depth_for_mask, vRects);
+
+    const auto ydm_t_refined = std::chrono::steady_clock::now();
+    const double ydm_ms_refined = ydm_ms_since(ydm_t, ydm_t_refined);
+    ydm_t = ydm_t_refined;
+
+    // 将 YOLO mask 作为保底并入 refined_mask，避免动态目标被深度细化漏检
+    // 如果深度 refined 完全无效（比如深度缺失），也能回退到 YOLO mask。
+    if (!yolo_union.empty())
+    {
+        const int nz_refined = cv::countNonZero(refined_mask);
+        if (nz_refined == 0)
+        {
+            refined_mask = yolo_union.clone();
+        }
+        else
+        {
+            cv::bitwise_or(refined_mask, yolo_union, refined_mask);
+        }
+    }
+    cv::Mat refined_mask_1=refined_mask;
+    // Step B: 预处理 - 基于光流判断每个 YOLO 框的动静状态
+    // 我们统计每个框内的特征点，看有多少比例是"显著运动"的 (diff > 2.5)
+    // 如果大部分是静止的，说明这个框（例如坐着的人）是静态物体，我们需要将其从 Mask 中移除，
+    // 以便在 PCD 建图中保留，并在 Tracking 中保留特征点。
+
+    struct BoxStats {
+        int total = 0;
+        int moving = 0;
+        std::vector<float> diffs;
+    };
+    std::map<int, BoxStats> box_stats_map; // Index in mvDynamicArea -> Stats
+
+    // 准备光流
+    bool bCheckFlow = !mLastImGray.empty() && !mImGray.empty();
+    std::vector<cv::Point2f> vPtsCurr;
+    std::vector<cv::Point2f> vPtsPrev;
+    std::vector<uchar> status;
+    std::vector<float> err;
+    float median_u=0, median_v=0;
+
+    // 可选：使用光流网络（ONNX）替代 LK。
+    // 默认行为（无环境变量时）：
+    // - 默认启用 FastFlowNet ONNX（若加载失败自动回退 LK）
+    // - 默认模型路径：FastFlowNet/export/fastflownet.onnx（相对当前工作目录）
+    // - 默认 kind：FASTFLOWNET（用于选择 FastFlowNet 的预处理/后处理）
+    // 用法（显式配置/覆盖）：
+    //   YDM_USE_FLOW_NET=1           # 启用（默认已启用）
+    //   YDM_USE_FLOW_NET=0           # 禁用
+    //   YDM_FLOW_NET_MODEL_PATH=/abs/path/to/flow.onnx
+    //   YDM_FLOW_NET_KIND=FASTFLOWNET
+    // 说明：
+    // - 支持两类模型输入：
+    //   1) 2-input: img1,img2 分别为 [1,3,H,W]
+    //   2) 1-input(FlowNetS 常见): input 为 [1,6,H,W] = concat(img1,img2)
+    // - 模型应输出像素级 flow（img1->img2），我们在这里调用顺序为 curr->prev。
+    const char* env_use_flow_net = std::getenv("YDM_USE_FLOW_NET");
+    const bool use_flow_net = !(env_use_flow_net && std::string(env_use_flow_net) == "0");
+
+    // Provide defaults for FastFlowNet when env vars are not set.
+    if (!std::getenv("YDM_FLOW_NET_KIND"))
+        setenv("YDM_FLOW_NET_KIND", "FASTFLOWNET", 0);
+
+    const char* flow_model_path = std::getenv("YDM_FLOW_NET_MODEL_PATH");
+    std::string flow_model_path_fallback;
+    if (!flow_model_path || std::string(flow_model_path).empty())
+    {
+        flow_model_path_fallback = "FastFlowNet/export/fastflownet.onnx";
+        flow_model_path = flow_model_path_fallback.c_str();
+    }
+    static std::unique_ptr<FlowNetOnnx> sFlowNet;
+    static std::mutex sFlowNetMutex;
+
+    // 可选参数（环境变量）
+    // - YDM_FLOW_FB_TH：forward-backward 一致性阈值（像素），默认 1.5
+    // - YDM_FLOW_RANSAC_REPROJ_TH：RANSAC 拟合阈值（像素），默认 3.0
+    float fb_th = 1.5f;
+    if (const char *env_fb = std::getenv("YDM_FLOW_FB_TH"))
+    {
+        try { fb_th = std::stof(std::string(env_fb)); } catch (...) { fb_th = 1.5f; }
+        if (fb_th < 0.1f) fb_th = 0.1f;
+    }
+    double ransac_reproj_th = 3.0;
+    if (const char *env_ransac = std::getenv("YDM_FLOW_RANSAC_REPROJ_TH"))
+    {
+        try { ransac_reproj_th = std::stod(std::string(env_ransac)); } catch (...) { ransac_reproj_th = 3.0; }
+        if (ransac_reproj_th < 0.5) ransac_reproj_th = 0.5;
+    }
+
+    if(bCheckFlow) {
+        for(int i=0; i<mCurrentFrame.N; i++) vPtsCurr.push_back(mCurrentFrame.mvKeysUn[i].pt);
+
+        bool flow_ok = false;
+        cv::Mat dense_flow;
+        const bool flow_net_fb = (std::getenv("YDM_FLOW_NET_FB") && std::string(std::getenv("YDM_FLOW_NET_FB")) == "1");
+        if (use_flow_net && flow_model_path && std::string(flow_model_path).size() > 0)
+        {
+            std::lock_guard<std::mutex> lock(sFlowNetMutex);
+            if (!sFlowNet)
+                sFlowNet.reset(new FlowNetOnnx());
+            if (!sFlowNet->IsLoaded())
+            {
+                static bool sLogged = false;
+                if (!sLogged)
+                {
+                    const char* kind = std::getenv("YDM_FLOW_NET_KIND");
+                    std::cout << "[YDM] FlowNetOnnx loading model: " << flow_model_path
+                              << " (YDM_FLOW_NET_KIND=" << (kind ? kind : "<default>") << ")" << std::endl;
+                    sLogged = true;
+                }
+                flow_ok = sFlowNet->ReadModel(std::string(flow_model_path));
+            }
+            else
+                flow_ok = true;
+
+            if (flow_ok)
+                flow_ok = sFlowNet->InferFlow(mImGray, mLastImGray, dense_flow);
+
+            if (flow_ok && !dense_flow.empty())
+            {
+                // Optional: save dense flow visualization to disk (very slow!).
+                // Default: DISABLED. Enable with YDM_SAVE_DENSE_FLOW=1
+                const char* env_save_df = std::getenv("YDM_SAVE_DENSE_FLOW");
+                const bool save_dense_flow = (env_save_df && std::string(env_save_df) == "1");
+                if (save_dense_flow)
+                {
+                    static bool sFlowDirReady = false;
+                    if (!sFlowDirReady)
+                    {
+                        const int rc = mkdir("flow-mask", 0755);
+                        if (rc == 0 || errno == EEXIST)
+                            sFlowDirReady = true;
+                    }
+
+                    if (sFlowDirReady)
+                    {
+                        // Visualize flow: hue=angle, value=magnitude.
+                        cv::Mat fx, fy;
+                        std::vector<cv::Mat> ch;
+                        cv::split(dense_flow, ch);
+                        if (ch.size() == 2)
+                        {
+                            fx = ch[0];
+                            fy = ch[1];
+
+                            cv::Mat mag, ang;
+                            cv::cartToPolar(fx, fy, mag, ang, false);
+
+                            // Scale magnitude for visualization.
+                            // - YDM_FLOW_VIZ_MAX: max magnitude (pixels) mapped to value=255. Default 15.
+                            float viz_max = 15.0f;
+                            if (const char* env_vm = std::getenv("YDM_FLOW_VIZ_MAX"))
+                            {
+                                try { viz_max = std::stof(std::string(env_vm)); } catch (...) { viz_max = 15.0f; }
+                                if (viz_max <= 1e-3f) viz_max = 15.0f;
+                            }
+
+                            cv::Mat v;
+                            mag.convertTo(v, CV_32F, 1.0f / viz_max);
+                            cv::threshold(v, v, 1.0, 1.0, cv::THRESH_TRUNC);
+                            v *= 255.0f;
+
+                            // Hue in [0,180): OpenCV HSV uses H in [0,180] for 8-bit.
+                            cv::Mat h;
+                            ang.convertTo(h, CV_32F, 180.0 / CV_PI / 2.0);
+                            cv::Mat s = cv::Mat::ones(h.size(), CV_32F) * 255.0f;
+
+                            cv::Mat hsv;
+                            std::vector<cv::Mat> hsv_ch{h, s, v};
+                            cv::merge(hsv_ch, hsv);
+                            hsv.convertTo(hsv, CV_8UC3);
+
+                            cv::Mat bgr;
+                            cv::cvtColor(hsv, bgr, cv::COLOR_HSV2BGR);
+
+                            std::ostringstream oss;
+                            oss << "flow-mask/flow_" << std::setw(6) << std::setfill('0') << mCurrentFrame.mnId << ".png";
+                            try { cv::imwrite(oss.str(), bgr); } catch (...) {}
+                        }
+                    }
+                }
+
+                // 从 dense flow 采样得到每个关键点的 prev 位置
+                vPtsPrev.resize(vPtsCurr.size());
+                status.assign(vPtsCurr.size(), 0);
+                for (size_t i = 0; i < vPtsCurr.size(); ++i)
+                {
+                    const int x = cvRound(vPtsCurr[i].x);
+                    const int y = cvRound(vPtsCurr[i].y);
+                    if (x < 0 || x >= dense_flow.cols || y < 0 || y >= dense_flow.rows)
+                        continue;
+                    const cv::Vec2f f = dense_flow.at<cv::Vec2f>(y, x);
+                    const float px = vPtsCurr[i].x + f[0];
+                    const float py = vPtsCurr[i].y + f[1];
+                    if (px < 0.f || px >= (float)mLastImGray.cols || py < 0.f || py >= (float)mLastImGray.rows)
+                        continue;
+                    vPtsPrev[i] = cv::Point2f(px, py);
+                    status[i] = 1;
+                }
+            }
+        }
+
+        if (!flow_ok)
+        {
+            // 回退：LK 光流
+            cv::calcOpticalFlowPyrLK(mImGray, mLastImGray, vPtsCurr, vPtsPrev, status, err, cv::Size(21,21), 3);
+        }
+
+        const auto ydm_t_flow = std::chrono::steady_clock::now();
+        const double ydm_ms_flow = ydm_ms_since(ydm_t, ydm_t_flow);
+        ydm_t = ydm_t_flow;
+
+        // Forward-Backward 一致性检查
+        // - 若使用 FlowNet：默认不做 LK 的 FB（会把网络给出的对应关系错误“打回”），可选启用网络FB。
+        // - 若使用 LK：继续使用 LK 的 FB。
+        std::vector<cv::Point2f> vPtsCurrFB;
+        std::vector<uchar> statusFB;
+        std::vector<float> errFB;
+
+        if (flow_ok && use_flow_net)
+        {
+            if (flow_net_fb)
+            {
+                cv::Mat dense_back;
+                bool back_ok = false;
+                {
+                    std::lock_guard<std::mutex> lock(sFlowNetMutex);
+                    back_ok = sFlowNet && sFlowNet->IsLoaded();
+                    if (back_ok)
+                        back_ok = sFlowNet->InferFlow(mLastImGray, mImGray, dense_back);
+                }
+
+                if (back_ok && !dense_back.empty())
+                {
+                    vPtsCurrFB.resize(vPtsCurr.size());
+                    statusFB.assign(vPtsCurr.size(), 0);
+                    for (size_t i = 0; i < vPtsCurr.size(); ++i)
+                    {
+                        if (i >= status.size() || !status[i]) continue;
+                        const int x = cvRound(vPtsPrev[i].x);
+                        const int y = cvRound(vPtsPrev[i].y);
+                        if (x < 0 || x >= dense_back.cols || y < 0 || y >= dense_back.rows)
+                            continue;
+                        const cv::Vec2f f = dense_back.at<cv::Vec2f>(y, x);
+                        const float cx = vPtsPrev[i].x + f[0];
+                        const float cy = vPtsPrev[i].y + f[1];
+                        if (cx < 0.f || cx >= (float)mImGray.cols || cy < 0.f || cy >= (float)mImGray.rows)
+                            continue;
+                        vPtsCurrFB[i] = cv::Point2f(cx, cy);
+                        statusFB[i] = 1;
+                    }
+                }
+            }
+        }
+        else
+        {
+            // LK 路径：用 LK 做 FB 检查
+            if (!vPtsPrev.empty())
+                cv::calcOpticalFlowPyrLK(mLastImGray, mImGray, vPtsPrev, vPtsCurrFB, statusFB, errFB, cv::Size(21,21), 3);
+        }
+        
+        // 计算背景中位数 (仅使用 Mask 外的点)
+        std::vector<float> vFlowU, vFlowV;
+        std::vector<cv::Point2f> bg_prev, bg_curr;
+        bg_prev.reserve(mCurrentFrame.N);
+        bg_curr.reserve(mCurrentFrame.N);
+
+        for(int i=0; i<mCurrentFrame.N; i++) {
+            if(!status[i]) continue;
+            if(!statusFB.empty() && (!statusFB[i])) continue;
+            if(!vPtsCurrFB.empty())
+            {
+                const float fb_err = cv::norm(vPtsCurrFB[i] - vPtsCurr[i]);
+                if (fb_err > fb_th) continue;
+            }
+            int x = cvRound(vPtsCurr[i].x);
+            int y = cvRound(vPtsCurr[i].y);
+            // 简单判断不在原始 refined_mask 内
+            if(x >=0 && x<refined_mask.cols && y>=0 && y<refined_mask.rows) {
+                 if(refined_mask.at<uchar>(y,x) == 0) { 
+                     vFlowU.push_back(vPtsCurr[i].x - vPtsPrev[i].x);
+                     vFlowV.push_back(vPtsCurr[i].y - vPtsPrev[i].y);
+                     bg_prev.push_back(vPtsPrev[i]);
+                     bg_curr.push_back(vPtsCurr[i]);
+                 }
+            }
+        }
+        
+        // 先算平移中位数（用于回退）
+        if(vFlowU.size() > 10) {
+            std::sort(vFlowU.begin(), vFlowU.end());
+            std::sort(vFlowV.begin(), vFlowV.end());
+            median_u = vFlowU[vFlowU.size()/2];
+            median_v = vFlowV[vFlowV.size()/2];
+
+            // 再拟合更稳健的背景运动模型（仿射/部分仿射），用于减少旋转/视角变化导致的误判
+            cv::Mat aff;
+            std::vector<uchar> inliers;
+            if (bg_prev.size() >= 15)
+            {
+                try
+                {
+                    aff = cv::estimateAffinePartial2D(bg_prev, bg_curr, inliers, cv::RANSAC, ransac_reproj_th);
+                }
+                catch (...) {
+                    aff.release();
+                }
+            }
+
+            const auto ydm_t_aff = std::chrono::steady_clock::now();
+            const double ydm_ms_aff = ydm_ms_since(ydm_t, ydm_t_aff);
+            ydm_t = ydm_t_aff;
+
+            // 统计每个框的状态
+            // 规则（按你的需求）：如果“框内光流判为动态的特征点”超过 50%，
+            // 则认为该框整体为动态目标，mask 内所有点都应剔除；
+            // 否则（<=50% 且统计点数足够）将该框从 mask 中清除以保留静态点。
+            const float kMovingDiffTh = 2.5f; // 认为“显著运动”的阈值（相对背景中位数光流）
+            const int   kMinPtsPerBox = 20;   // 一个框至少要有这么多成功跟踪的点才允许做比例判定
+
+            // 可配置：光流动态比例阈值，默认 0.50
+            // 用法：运行前设置环境变量 `YDM_FLOW_DYNAMIC_RATIO_TH=0.5`
+            float kDynamicRatioTh = 0.50f;
+            if (const char *env_ratio = std::getenv("YDM_FLOW_DYNAMIC_RATIO_TH"))
+            {
+                try
+                {
+                    kDynamicRatioTh = std::stof(std::string(env_ratio));
+                }
+                catch (...)
+                {
+                    kDynamicRatioTh = 0.50f;
+                }
+                if (kDynamicRatioTh < 0.0f) kDynamicRatioTh = 0.0f;
+                if (kDynamicRatioTh > 1.0f) kDynamicRatioTh = 1.0f;
+            }
+
+            for(int i=0; i<mCurrentFrame.N; i++) {
+                if(!status[i]) continue;
+                if(!statusFB.empty() && (!statusFB[i])) continue;
+                if(!vPtsCurrFB.empty())
+                {
+                    const float fb_err = cv::norm(vPtsCurrFB[i] - vPtsCurr[i]);
+                    if (fb_err > fb_th) continue;
+                }
+                
+                float diff = 0.0f;
+                if (!aff.empty())
+                {
+                    // residual = | Aff(prev) - curr |
+                    const double px = vPtsPrev[i].x;
+                    const double py = vPtsPrev[i].y;
+                    const double pred_x = aff.at<double>(0,0)*px + aff.at<double>(0,1)*py + aff.at<double>(0,2);
+                    const double pred_y = aff.at<double>(1,0)*px + aff.at<double>(1,1)*py + aff.at<double>(1,2);
+                    const double dx = pred_x - vPtsCurr[i].x;
+                    const double dy = pred_y - vPtsCurr[i].y;
+                    diff = (float)std::sqrt(dx*dx + dy*dy);
+                }
+                else
+                {
+                    // 回退：相对背景平移中位数
+                    const float u = vPtsCurr[i].x - vPtsPrev[i].x;
+                    const float v = vPtsCurr[i].y - vPtsPrev[i].y;
+                    const float diff_u = u - median_u;
+                    const float diff_v = v - median_v;
+                    diff = std::sqrt(diff_u*diff_u + diff_v*diff_v);
+                }
+
+                // 检查点属于哪个框
+                // mpORBextractorLeft->mvDynamicArea 是原始 YOLO 框
+                for(size_t k=0; k < mpORBextractorLeft->mvDynamicArea.size(); k++) {
+                    if(mpORBextractorLeft->mvDynamicArea[k].contains(mCurrentFrame.mvKeysUn[i].pt)) {
+                        box_stats_map[k].total++;
+                        box_stats_map[k].diffs.push_back(diff);
+                        if(diff > kMovingDiffTh) { // 运动阈值
+                            box_stats_map[k].moving++;
+                        }
+                        // 一个点只归属第一个匹配的框 (简化)
+                        break;
+                    }
+                }
+            }
+
+            // 根据统计结果更新 Mask
+            // - ratio > 0.5: 保留该框为动态（mask 不清除），后续 mask 内点全部剔除
+            // - ratio <= 0.5: 认为该框整体偏静态，清除该框区域的 mask（保留点/点云）
+            for(std::map<int, BoxStats>::const_iterator it = box_stats_map.begin(); it != box_stats_map.end(); ++it) {
+                const int k = it->first;
+                const BoxStats &stats = it->second;
+                if(stats.total < kMinPtsPerBox) {
+                    continue; // 证据不足：默认不清mask（更保守）
+                }
+
+                const float ratio = (float)stats.moving / (float)stats.total;
+                if(ratio <= kDynamicRatioTh) {
+                    if (ydm_flow_box_log || ydm_verbose)
+                        std::cout << "Reverting Box (static by flow): Box " << k
+                                  << " (Moving: " << stats.moving << "/" << stats.total
+                                  << " Ratio: " << ratio << ")" << std::endl;
+
+                    cv::Rect safe = mpORBextractorLeft->mvDynamicArea[k] & cv::Rect(0, 0, refined_mask.cols, refined_mask.rows);
+                    if(safe.area() > 0) {
+                        refined_mask(safe).setTo(0);
+                    }
+                } else {
+                    if (ydm_flow_box_log || ydm_verbose)
+                        std::cout << "Keeping Box (dynamic by flow): Box " << k
+                                  << " (Moving: " << stats.moving << "/" << stats.total
+                                  << " Ratio: " << ratio << ")" << std::endl;
+                }
+            }
+
+            const auto ydm_t_box = std::chrono::steady_clock::now();
+            const double ydm_ms_box = ydm_ms_since(ydm_t, ydm_t_box);
+            ydm_t = ydm_t_box;
+
+            // If profiling, print summary periodically. (Avoid printing every frame.)
+            if (ydm_profile && (mCurrentFrame.mnId % ydm_profile_every) == 0)
+            {
+                const auto ydm_t_now = std::chrono::steady_clock::now();
+                const double ydm_ms_total = ydm_ms_since(ydm_t0_all, ydm_t_now);
+                const double fps = 1000.0 / ydm_ms_total;
+                std::cout << "[YDM] F=" << std::setw(4) << mCurrentFrame.mnId
+                          << " | Depth=" << std::setw(5) << std::fixed << std::setprecision(1) << ydm_ms_depth << "ms"
+                          << " YoloUnion=" << std::setw(5) << ydm_ms_yolo_union << "ms"
+                          << " Refined=" << std::setw(5) << ydm_ms_refined << "ms"
+                          << " Flow=" << std::setw(6) << ydm_ms_flow << "ms"
+                          << " Affine=" << std::setw(5) << ydm_ms_aff << "ms"
+                          << " Box=" << std::setw(5) << ydm_ms_box << "ms"
+                          << " || TOTAL=" << std::setw(6) << ydm_ms_total << "ms"
+                          << " FPS=" << std::setw(5) << std::setprecision(1) << fps << std::endl;
+            }
+
+        } else {
+            bCheckFlow = false;
+        }
+    }
+
+
+    // 更新 Frame 中的 Mask，供后续建图使用 (此时 mask 已经被"平反"逻辑修正过)
+    mCurrentFrame.mvDynamicMask.clear();
+    mCurrentFrame.mvDynamicMask.push_back(refined_mask);
+
+    // 可选：保存 refined_mask（用于调试点云/动态剔除效果）
+    // 用法：在运行前设置环境变量 `YDM_SAVE_REFINED_MASK=1`
+    // 额外：可设置 `YDM_SAVE_REFINED_MASK_EVERY=N` 控制每 N 帧保存一次（例如 N=2 表示每两帧保存）
+    if (const char *env = std::getenv("YDM_SAVE_REFINED_MASK"))
+    {
+        if (std::string(env) == "1")
+        {
+            try
+            {
+                int save_every = 1;
+                if (const char *env_every = std::getenv("YDM_SAVE_REFINED_MASK_EVERY"))
+                {
+                    try
+                    {
+                        save_every = std::max(1, std::stoi(std::string(env_every)));
+                    }
+                    catch (...)
+                    {
+                        save_every = 1;
+                    }
+                }
+
+                // 只在需要保存的帧才执行保存操作
+                if (save_every <= 1 || (mCurrentFrame.mnId % save_every) == 0)
+                {
+                    // 确保 mask 目录存在
+                    static bool sMaskDirReady = false;
+                    if (!sMaskDirReady)
+                    {
+                        const int rc = mkdir("mask", 0755);
+                        if (rc == 0 || errno == EEXIST)
+                            sMaskDirReady = true;
+                    }
+
+                    if (sMaskDirReady)
+                    {
+                        std::ostringstream oss;
+                        oss << "mask/refined_mask_" << std::setw(6) << std::setfill('0') << mCurrentFrame.mnId << ".png";
+                        const bool ok = cv::imwrite(oss.str(), refined_mask_1);
+                        if (!ok)
+                        {
+                            std::cerr << "WARNING: Failed to save refined mask to '" << oss.str() << "'" << std::endl;
+                        }
+                    }
+                }
+            }
+            catch (const cv::Exception &e)
+            {
+                std::cerr << "WARNING: Exception while saving refined mask: " << e.what() << std::endl;
+            }
+        }
+    }
+
+    const auto ydm_t_mask_save = std::chrono::steady_clock::now();
+    const double ydm_ms_mask_save = ydm_ms_since(ydm_t, ydm_t_mask_save);
+    ydm_t = ydm_t_mask_save;
+
+
+    // Step C: 遍历特征点进行剔除 (使用更新后的 Mask)
+    int nPrunedMask = 0;
+    int nPrunedGeom = 0;
+
+    // Adaptive Pruning Strategy Loop
+    float currentGeoThreshold = 5.0f; // Relaxed default from 2.5f to 5.0f to prevent jitter
+    bool bSafetyTriggered = false;
+
+    // We might need to run this twice if safety mechanism is triggered
+    for(int attempt=0; attempt<2; attempt++) {
+        nPrunedMask = 0;
+        nPrunedGeom = 0;
+        
+        // Reset outliers first if this is a retry
+        if(attempt > 0) {
+             for(int i=0; i<mCurrentFrame.N; i++) {
+                 mCurrentFrame.mvbOutlier[i] = false;
+                 // Don't reset class_id here, will overwrite below
+             }
+        }
+
+        for(int i=0; i<mCurrentFrame.N; i++) {
+            const cv::Point2f &pt = mCurrentFrame.mvKeysUn[i].pt;
+            int x = cvRound(pt.x);
+            int y = cvRound(pt.y);
+            
+            // 边界检查
+            if(x < 0 || x >= refined_mask.cols || y < 0 || y >= refined_mask.rows)
+                continue;
+
+            // Condition A: 落在 Refined Mask 内
+            // 注意：因为上面已经把静态框涂黑了，所以这里的 in_mask 已经是 false 了
+            bool in_mask = refined_mask.at<uchar>(y, x) > 0;
+            
+            bool should_prune = false;
+            float diff = 0.0f;
+
+            // 策略修正：
+            // - 光流只用于“平反整框”(Step B)，不要用于在 mask 内逐点放行。
+            //   否则动态物体在某些帧里会因为 diff 小（例如与相机运动接近/光流抖动/跟踪失败）而被保留。
+            // - 因此：只要点仍在 refined_mask 内，一律剔除。
+            if (in_mask) {
+                should_prune = true;
+            } else if(bCheckFlow && status[i]) {
+                float u = vPtsCurr[i].x - vPtsPrev[i].x;
+                float v = vPtsCurr[i].y - vPtsPrev[i].y;
+                float diff_u = u - median_u;
+                float diff_v = v - median_v;
+                diff = sqrt(diff_u*diff_u + diff_v*diff_v);
+
+                // Mask 外的点，仅剔除“显著运动”的点
+                if (diff > currentGeoThreshold) {
+                    should_prune = true;
+                }
+            }
+
+            if (should_prune) {
+                mCurrentFrame.mvbOutlier[i] = true;
+                mCurrentFrame.mvKeys[i].class_id = -99;
+                
+                if(in_mask) nPrunedMask++;
+                else nPrunedGeom++; // Simplified stats
+            } else {
+                 mCurrentFrame.mvbOutlier[i] = false; // Ensure healthy points are marked false
+                 mCurrentFrame.mvKeys[i].class_id = 0;  // Reset visualization for kept points
+            }
+        }
+        
+        int nRemaining = mCurrentFrame.N - (nPrunedMask + nPrunedGeom);
+        
+        // Safety Check: If retention is less than 50%, relax threshold and retry
+        // Note: This mainly affects the !in_mask points, as in_mask points have fixed 2.5px threshold
+        if(attempt == 0 && nRemaining < (mCurrentFrame.N / 2)) {
+            if (ydm_verbose)
+                std::cout << "WARNING: Excessive Pruning! Remaining: " << nRemaining << "/" << mCurrentFrame.N 
+                          << " (<50%). Relaxing Geometric Threshold to 10.0px." << std::endl;
+            currentGeoThreshold = 10.0f;
+            bSafetyTriggered = true;
+            continue; // Retry loop
+        }
+        
+        if (ydm_verbose)
+            std::cout << "Dynamic Pruning: " << nPrunedMask << " by Mask, " << nPrunedGeom << " by Geometry. "
+                      << "Remaining: " << nRemaining << "/" << mCurrentFrame.N << std::endl;
+                  
+        if(attempt > 0) break; // Finished retry
+        if(!bSafetyTriggered) break; // Finished first try successfully
+    }
+
+    // Optional: include pruning + total time (printed periodically)
+    if (ydm_profile && (mCurrentFrame.mnId % ydm_profile_every) == 0)
+    {
+        const auto ydm_t_end = std::chrono::steady_clock::now();
+        const double ydm_ms_prune = ydm_ms_since(ydm_t, ydm_t_end);
+        const double ydm_ms_total = ydm_ms_since(ydm_t0_all, ydm_t_end);
+        const double fps = 1000.0 / ydm_ms_total;
+        std::cout << "[YDM][FULL] Frame=" << std::setw(4) << mCurrentFrame.mnId
+                  << " | MaskSave=" << std::setw(5) << std::fixed << std::setprecision(1) << ydm_ms_mask_save << "ms"
+                  << " Prune=" << std::setw(5) << ydm_ms_prune << "ms"
+                  << " || TOTAL=" << std::setw(6) << ydm_ms_total << "ms"
+                  << " FPS=" << std::setw(5) << fps << std::endl;
+    }
+}
+
+// ------------------------------------
+// Original CheckFlowConsistency (Deprecated or kept for reference)
+// ------------------------------------
 void Tracking::CheckFlowConsistency()
 {
     // 0. 安全检查

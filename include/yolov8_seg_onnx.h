@@ -15,9 +15,27 @@
 class Yolov8SegOnnx {
 public:
 	Yolov8SegOnnx() :_OrtMemoryInfo(Ort::MemoryInfo::CreateCpu(OrtAllocatorType::OrtDeviceAllocator, OrtMemType::OrtMemTypeCPUOutput)) {};
-	~Yolov8SegOnnx() {
-		if (_OrtSession != nullptr)
-			delete _OrtSession;
+	~Yolov8SegOnnx() noexcept {
+		try
+		{
+			if (_OrtSession != nullptr)
+			{
+				delete _OrtSession;
+				_OrtSession = nullptr;
+			}
+		}
+		catch(const Ort::Exception& e)
+		{
+			std::cerr << "WARNING: Yolov8SegOnnx cleanup failed (Ort::Exception): " << e.what() << std::endl;
+		}
+		catch(const std::exception& e)
+		{
+			std::cerr << "WARNING: Yolov8SegOnnx cleanup failed (std::exception): " << e.what() << std::endl;
+		}
+		catch(...)
+		{
+			std::cerr << "WARNING: Yolov8SegOnnx cleanup failed (unknown exception)" << std::endl;
+		}
 	};// delete _OrtMemoryInfo;
 
 

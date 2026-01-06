@@ -703,6 +703,8 @@ vector<size_t> Frame::GetFeaturesInArea(const float &x, const float  &y, const f
 
             for(size_t j=0, jend=vCell.size(); j<jend; j++)
             {
+                if(!mvbOutlier.empty() && vCell[j] < mvbOutlier.size() && mvbOutlier[vCell[j]])
+                    continue;
                 const cv::KeyPoint &kpUn = (Nleft == -1) ? mvKeysUn[vCell[j]]
                                                          : (!bRight) ? mvKeys[vCell[j]]
                                                                      : mvKeysRight[vCell[j]];
