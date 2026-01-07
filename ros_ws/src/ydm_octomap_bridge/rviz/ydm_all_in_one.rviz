@@ -1,0 +1,118 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Selection
+    Name: Selection
+  - Class: rviz/Tool Properties
+    Name: Tool Properties
+  - Class: rviz/Views
+    Name: Views
+  - Class: rviz/Time
+    Name: Time
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz/Grid
+      Enabled: true
+      Name: Grid
+      Plane: XY
+      Cell Size: 1
+      Plane Cell Count: 40
+      Color: 160; 160; 160
+      Alpha: 0.5
+
+    - Class: rviz/TF
+      Enabled: true
+      Name: TF
+      Show Axes: true
+      Show Names: false
+      Marker Scale: 1
+
+    - Class: rviz/PointCloud2
+      Enabled: true
+      Name: YDM Static Cloud
+      Topic: /ydm/static_cloud
+      Queue Size: 1
+      Style: Points
+      Size (Pixels): 2
+      Alpha: 1
+      Color Transformer: RGB8
+      Use Fixed Frame: true
+
+    - Class: rviz/PointCloud2
+      Enabled: true
+      Name: YDM Dynamic Cloud
+      Topic: /ydm/dynamic_cloud
+      Queue Size: 1
+      Style: Points
+      Size (Pixels): 3
+      Alpha: 1
+      Color Transformer: RGB8
+      Use Fixed Frame: true
+
+    # 立体体素（octomap_server 默认发布）
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Name: Octomap Voxels
+      Marker Topic: /occupied_cells_vis_array
+      Queue Size: 1
+
+    - Class: rviz/Map
+      Enabled: true
+      Name: Local Costmap
+      Topic: /move_base/local_costmap/costmap
+      Alpha: 0.70
+      Color Scheme: costmap
+
+    - Class: rviz/Map
+      Enabled: true
+      Name: Global Costmap
+      Topic: /move_base/global_costmap/costmap
+      Alpha: 0.35
+      Color Scheme: costmap
+
+    - Class: rviz/Path
+      Enabled: true
+      Name: Global Plan
+      Topic: /move_base/NavfnROS/plan
+      Color: 0; 255; 0
+      Line Style: Lines
+      Line Width: 0.03
+
+    - Class: rviz/Path
+      Enabled: true
+      Name: Local Plan
+      Topic: /move_base/TrajectoryPlannerROS/local_plan
+      Color: 255; 165; 0
+      Line Style: Lines
+      Line Width: 0.03
+
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 30
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/FocusCamera
+    - Class: rviz/Measure
+    - Class: rviz/SetInitialPose
+      Topic: /initialpose
+    - Class: rviz/SetGoal
+      Topic: /move_base_simple/goal
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 25
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Pitch: 0.7
+      Yaw: 0.8
+Window Geometry:
+  Height: 900
+  Width: 1400
+  X: 50
+  Y: 50

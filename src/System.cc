@@ -192,7 +192,9 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
     // Point Cloud Mapping (optional)
     // Enable with: export YDM_ENABLE_PCL_MAPPING=1
     mpPointCloudMapping = nullptr;
-    const bool enablePclMapping = (std::getenv("YDM_ENABLE_PCL_MAPPING") && std::string(std::getenv("YDM_ENABLE_PCL_MAPPING")) == "1");
+    const bool enablePclMappingExplicit = (std::getenv("YDM_ENABLE_PCL_MAPPING") && std::string(std::getenv("YDM_ENABLE_PCL_MAPPING")) == "1");
+    const bool enableRosPublish = (std::getenv("YDM_ROS") && std::string(std::getenv("YDM_ROS")) == "1");
+    const bool enablePclMapping = enablePclMappingExplicit || enableRosPublish;
     if(enablePclMapping && (mSensor == RGBD || mSensor == IMU_RGBD))
     {
         float depthMapFactor = 1000.0f;
@@ -212,7 +214,7 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
     }
     else
     {
-        std::cout << "点云建图模块已禁用（需要时 export YDM_ENABLE_PCL_MAPPING=1）" << std::endl;
+        std::cout << "点云建图模块已禁用（需要时 export YDM_ENABLE_PCL_MAPPING=1；如需发布 /ydm/static_cloud 则运行时需 YDM_ROS=1）" << std::endl;
     }
 
     //Create Drawers. These are used by the Viewer

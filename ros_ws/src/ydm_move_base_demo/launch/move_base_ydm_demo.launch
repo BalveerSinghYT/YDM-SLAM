@@ -1,0 +1,45 @@
+<launch>
+  <!--
+    Minimal move_base demo for dataset playback.
+    Dataset playback commonly provides TF: map->camera (no base_link/odom).
+    PointCloud2 topics:
+      /ydm/static_cloud
+      /ydm/dynamic_cloud
+  -->
+
+  <arg name="cmd_vel_topic" default="/cmd_vel" />
+  <arg name="global_frame" default="map" />
+  <arg name="local_global_frame" default="map" />
+  <arg name="robot_base_frame" default="camera" />
+
+  <node pkg="move_base" type="move_base" name="move_base" output="screen" respawn="false">
+    <!-- Load params into /move_base/* so costmap_2d + planners actually see them -->
+    <rosparam ns="global_costmap" file="$(find ydm_move_base_demo)/config/costmap_common.yaml" command="load" subst_value="true" />
+    <rosparam ns="local_costmap"  file="$(find ydm_move_base_demo)/config/costmap_common.yaml" command="load" subst_value="true" />
+    <rosparam file="$(find ydm_move_base_demo)/config/global_costmap.yaml" command="load" subst_value="true" />
+    <rosparam file="$(find ydm_move_base_demo)/config/local_costmap.yaml" command="load" subst_value="true" />
+    <rosparam file="$(find ydm_move_base_demo)/config/base_local_planner.yaml" command="load" subst_value="true" />
+
+    <!-- Remap cmd_vel if needed later -->
+    <remap from="cmd_vel" to="$(arg cmd_vel_topic)" />
+
+    <!-- Planner choices (defaults are fine for demo) -->
+    <param name="base_global_planner" value="navfn/NavfnROS" />
+    <param name="base_local_planner" value="base_local_planner/TrajectoryPlannerROS" />
+
+    <!-- Ensure costmaps use frames that exist in dataset playback -->
+    <param name="global_costmap/global_frame" value="$(arg global_frame)" />
+    <param name="global_costmap/robot_base_frame" value="$(arg robot_base_frame)" />
+    <param name="local_costmap/global_frame" value="$(arg local_global_frame)" />
+    <param name="local_costmap/robot_base_frame" value="$(arg robot_base_frame)" />
+
+    <!-- More forgiving for dataset playback where TF can be jittery -->
+    <param name="global_costmap/transform_tolerance" value="2.0" />
+    <param name="local_costmap/transform_tolerance" value="2.0" />
+
+    <!-- Recovery behaviors on by default -->
+    <param name="shutdown_costmaps" value="false" />
+    <param name="controller_frequency" value="10.0" />
+    <param name="planner_frequency" value="1.0" />
+  </node>
+</launch>

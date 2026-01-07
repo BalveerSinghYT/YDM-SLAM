@@ -554,6 +554,9 @@ public:
     // 生成的点云数据
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr mptrPointCloud;
 
+    // 可选：仅动态物体点云（用于语义/动态层展示，不参与静态地图）
+    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr mptrPointCloudDynamic;
+
     // 动态对象信息
     std::vector<cv::Mat> mvDynamicMask;
     std::vector<cv::Rect2i> mvDynamicArea;

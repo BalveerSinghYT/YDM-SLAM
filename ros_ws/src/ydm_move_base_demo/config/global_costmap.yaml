@@ -1,0 +1,20 @@
+# Demo-only global_costmap: rolling window (no /map required).
+# This does not give true "global" planning across the environment, but lets you test
+# move_base + voxel_layer integration on dataset playback.
+
+global_costmap:
+  # Frames are set/overridden in the launch file.
+  global_frame: map
+  robot_base_frame: camera
+  update_frequency: 5.0
+  publish_frequency: 2.0
+  transform_tolerance: 0.8
+
+  rolling_window: true
+  width: 30.0
+  height: 30.0
+  resolution: 0.10
+
+  plugins:
+    - {name: voxel_layer, type: "costmap_2d::VoxelLayer"}
+    - {name: inflation_layer, type: "costmap_2d::InflationLayer"}

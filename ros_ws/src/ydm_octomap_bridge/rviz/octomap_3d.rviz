@@ -1,0 +1,60 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Selection
+    Name: Selection
+  - Class: rviz/Tool Properties
+    Name: Tool Properties
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz/Grid
+      Enabled: true
+      Name: Grid
+      Plane: XY
+      Cell Size: 1
+      Plane Cell Count: 20
+      Color: 160; 160; 160
+      Alpha: 0.5
+    - Class: rviz/TF
+      Enabled: true
+      Name: TF
+      Show Axes: true
+      Show Names: true
+      Marker Scale: 1
+    - Class: rviz/PointCloud2
+      Enabled: true
+      Name: static_cloud
+      Topic: /ydm/static_cloud
+      Queue Size: 5
+      Style: Points
+      Size (Pixels): 2
+    # “立体方块”最通用的显示方式：MarkerArray（octomap_server 自带发布）
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Name: occupied_voxels
+      Marker Topic: /occupied_cells_vis_array
+      Queue Size: 1
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/FocusCamera
+    - Class: rviz/Measure
+    - Class: rviz/SetInitialPose
+    - Class: rviz/SetGoal
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 20
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Pitch: 0.6
+      Yaw: 0.8

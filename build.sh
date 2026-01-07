@@ -14,6 +14,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_MODE="${1:-all}"
 SKIP_THIRDPARTY="${YDM_SKIP_THIRDPARTY:-0}"
 SKIP_VOCAB="${YDM_SKIP_VOCAB:-0}"
+WITH_ROS="${YDM_WITH_ROS:-0}"
 
 echo "Build mode: ${BUILD_MODE}"
 
@@ -63,7 +64,12 @@ build_project() {
 	echo "Configuring and building YDM-SLAM ..."
 	mkdir -p "$ROOT_DIR/build"
 	cd "$ROOT_DIR/build"
-	cmake .. -DCMAKE_BUILD_TYPE=Release
+	ROS_FLAG=""
+	if [[ "$WITH_ROS" == "1" ]]; then
+		ROS_FLAG="-DYDM_WITH_ROS=ON"
+		echo "ROS enabled: -DYDM_WITH_ROS=ON"
+	fi
+	cmake .. -DCMAKE_BUILD_TYPE=Release ${ROS_FLAG}
 	cmake --build . --target rgbd_tum -- -j4
 	cmake --build . --target flow_infer -- -j4
 }

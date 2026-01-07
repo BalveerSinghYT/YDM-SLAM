@@ -1,0 +1,36 @@
+<launch>
+  <!-- Build a 3D OctoMap directly from YDM-SLAM PointCloud2 topics -->
+
+  <arg name="frame_id" default="map" />
+  <arg name="resolution" default="0.10" />
+  <arg name="cloud_in" default="/ydm/static_cloud" />
+
+  <!-- Performance / quality knobs (match common blog setups) -->
+  <arg name="max_range" default="-1.0" />
+  <arg name="latch" default="false" />
+  <arg name="filter_speckles" default="true" />
+
+  <node pkg="octomap_server" type="octomap_server_node" name="octomap_server" output="screen">
+    <!-- octomap_server subscribes to the relative topic name 'cloud_in' -->
+    <remap from="cloud_in" to="$(arg cloud_in)" />
+
+    <!-- Global frame to publish the map in. Must match RViz Fixed Frame. -->
+    <param name="frame_id" value="$(arg frame_id)" />
+
+    <!-- Voxel size (meters). Smaller = more detail, heavier CPU/mem. -->
+    <param name="resolution" value="$(arg resolution)" />
+
+    <!-- Limit insertion range to reduce noise (set -1 for unlimited). -->
+    <param name="sensor_model/max_range" value="$(arg max_range)" />
+
+    <!-- For streaming maps, keep this false for better performance. -->
+    <param name="latch" value="$(arg latch)" />
+
+    <!-- Drop single-voxel speckles (helps with tiny leaked edge points). -->
+    <param name="filter_speckles" value="$(arg filter_speckles)" />
+
+    <!-- Optional: clamp point heights if you only care about a band (disabled by default) -->
+    <!-- <param name="pointcloud_min_z" value="-1.0" /> -->
+    <!-- <param name="pointcloud_max_z" value=" 2.0" /> -->
+  </node>
+</launch>

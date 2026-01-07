@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.2)
 project(ORB_SLAM3)
 
+option(YDM_WITH_ROS "Build native ROS1 publishing (roscpp)" OFF)
+
 # Set the build type if not specified
 IF(NOT CMAKE_BUILD_TYPE)
     SET(CMAKE_BUILD_TYPE RelWithDebInfo)
@@ -63,6 +65,11 @@ find_package(realsense2)
 find_package(PCL REQUIRED)
 find_package(OpenMP)
 
+if(YDM_WITH_ROS)
+        find_package(catkin REQUIRED COMPONENTS roscpp tf2_ros geometry_msgs sensor_msgs pcl_ros pcl_conversions)
+        add_definitions(-DYDM_WITH_ROS)
+endif()
+
 # Include directories
 include_directories(
         ${PROJECT_SOURCE_DIR}
@@ -73,6 +80,10 @@ include_directories(
         ${Pangolin_INCLUDE_DIRS}
         ${PCL_INCLUDE_DIRS}
 )
+
+if(YDM_WITH_ROS)
+        include_directories(${catkin_INCLUDE_DIRS})
+endif()
 
 # PCL definitions and library directories
 add_definitions(${PCL_DEFINITIONS})
@@ -169,6 +180,11 @@ target_link_libraries(${PROJECT_NAME}
         -lboost_serialization
         -lcrypto
         )
+
+if(YDM_WITH_ROS)
+        target_link_libraries(${PROJECT_NAME} ${catkin_LIBRARIES})
+        target_sources(${PROJECT_NAME} PRIVATE src/RosBridge.cc)
+endif()
 
 if(OpenMP_CXX_FOUND)
         target_link_libraries(${PROJECT_NAME} OpenMP::OpenMP_CXX)
@@ -350,6 +366,12 @@ endif()
 
 # Old examples
 
+# NOTE: Some forks/repos don't ship the legacy Examples_old sources. Building
+# them unconditionally breaks CMake configure/generate.
+option(BUILD_OLD_EXAMPLES "Build legacy Examples_old targets" OFF)
+
+if(BUILD_OLD_EXAMPLES)
+
 # Set the runtime output directory for old RGB-D examples
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples_old/RGB-D)
 
@@ -469,4 +491,6 @@ if(realsense2_FOUND)
     add_executable(stereo_inertial_realsense_D435i_old
             Examples_old/Stereo-Inertial/stereo_inertial_realsense_D435i.cc)
     target_link_libraries(stereo_inertial_realsense_D435i_old ${PROJECT_NAME})
+endif()
+
 endif()

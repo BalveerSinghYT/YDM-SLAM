@@ -25,6 +25,10 @@
 
 #include<System.h>
 
+#ifdef YDM_WITH_ROS
+#include <ros/ros.h>
+#endif
+
 using namespace std;
 
 void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageFilenamesRGB,
@@ -32,6 +36,11 @@ void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageF
 
 int main(int argc, char **argv)
 {
+
+#ifdef YDM_WITH_ROS
+    // Optional native ROS publishing (PointCloud2 + TF) controlled by env YDM_ROS=1.
+    ros::init(argc, argv, "orbslam3_rgbd_tum");
+#endif
     if(argc < 5)
     {
         cerr << endl << "Usage: ./rgbd_tum path_to_vocabulary path_to_settings path_to_sequence path_to_association <optional_step_by_step>" << endl;
@@ -110,6 +119,10 @@ int main(int argc, char **argv)
 
         // Pass the image to the SLAM system
         SLAM.TrackRGBD(imRGB,imD,tframe);
+
+    #ifdef YDM_WITH_ROS
+        if(ros::ok()) ros::spinOnce();
+    #endif
 
 #ifdef COMPILEDWITHC14
         std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();

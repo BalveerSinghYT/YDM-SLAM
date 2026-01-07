@@ -1,0 +1,36 @@
+<launch>
+  <!-- One-shot bringup: OctoMap + move_base demo + RViz -->
+
+  <arg name="frame_id" default="map" />
+  <arg name="robot_base_frame" default="camera" />
+
+  <!-- OctoMap settings -->
+  <arg name="octomap_resolution" default="0.10" />
+  <arg name="octomap_cloud_in" default="/ydm/static_cloud" />
+  <arg name="octomap_max_range" default="-1.0" />
+  <arg name="octomap_filter_speckles" default="true" />
+
+  <!-- move_base settings -->
+  <arg name="cmd_vel_topic" default="/cmd_vel" />
+
+  <!-- Start OctoMap from YDM clouds -->
+  <include file="$(find ydm_octomap_bridge)/launch/octomap_from_ydm.launch">
+    <arg name="frame_id" value="$(arg frame_id)" />
+    <arg name="resolution" value="$(arg octomap_resolution)" />
+    <arg name="cloud_in" value="$(arg octomap_cloud_in)" />
+    <arg name="max_range" value="$(arg octomap_max_range)" />
+    <arg name="filter_speckles" value="$(arg octomap_filter_speckles)" />
+  </include>
+
+  <!-- Start move_base voxel-layer demo -->
+  <include file="$(find ydm_move_base_demo)/launch/move_base_ydm_demo.launch">
+    <arg name="cmd_vel_topic" value="$(arg cmd_vel_topic)" />
+    <arg name="global_frame" value="$(arg frame_id)" />
+    <arg name="local_global_frame" value="$(arg frame_id)" />
+    <arg name="robot_base_frame" value="$(arg robot_base_frame)" />
+  </include>
+
+  <!-- RViz (combined view) -->
+  <node pkg="rviz" type="rviz" name="rviz" output="screen"
+        args="-d $(find ydm_octomap_bridge)/rviz/ydm_all_in_one.rviz" />
+</launch>

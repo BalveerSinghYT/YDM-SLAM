@@ -1,0 +1,32 @@
+# Conservative defaults for dataset playback / visualization.
+# These values are placeholders; tune for your robot.
+
+base_local_planner: "base_local_planner/TrajectoryPlannerROS"
+
+TrajectoryPlannerROS:
+  # Kinematics
+  holonomic_robot: false
+
+  # Velocity limits
+  max_vel_x: 0.5
+  min_vel_x: 0.0
+  max_vel_theta: 1.0
+  min_in_place_vel_theta: 0.4
+
+  # Acceleration limits
+  acc_lim_x: 1.0
+  acc_lim_theta: 2.0
+
+  # Goal tolerances
+  xy_goal_tolerance: 0.2
+  yaw_goal_tolerance: 0.3
+
+  # Simulation / sampling
+  sim_time: 1.5
+  vx_samples: 10
+  vtheta_samples: 20
+
+  # Scoring
+  path_distance_bias: 32.0
+  goal_distance_bias: 24.0
+  occdist_scale: 0.05

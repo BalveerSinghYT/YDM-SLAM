@@ -1,0 +1,37 @@
+<launch>
+  <!-- Root of the SLAM repo that contains ./pcd and optional ./pcd_dyn -->
+  <arg name="ydm_root" default="$(optenv YDM_SLAM_ROOT /home/max/DynamicSLAM/YOLOv8-ORBSLAM)" />
+  <arg name="frame_id" default="map" />
+  <arg name="resolution" default="0.10" />
+  <arg name="rate_hz" default="5.0" />
+  <arg name="loop" default="false" />
+  <arg name="enable_dynamic_octomap" default="false" />
+  <arg name="publish_dynamic" default="true" />
+
+  <!-- Publish PCDs as PointCloud2 -->
+  <node pkg="ydm_octomap_bridge" type="pcd_dir_publisher" name="pcd_dir_publisher" output="screen">
+    <param name="static_dir" value="$(arg ydm_root)/pcd" />
+    <param name="dynamic_dir" value="$(arg ydm_root)/pcd_dyn" />
+    <param name="frame_id" value="$(arg frame_id)" />
+    <param name="rate_hz" value="$(arg rate_hz)" />
+    <param name="loop" value="$(arg loop)" />
+    <param name="follow" value="true" />
+    <param name="publish_dynamic" value="$(arg publish_dynamic)" />
+  </node>
+
+  <!-- Static octomap (occupancy) -->
+  <node pkg="octomap_server" type="octomap_server_node" name="octomap_server" output="screen">
+    <remap from="cloud_in" to="/ydm/static_cloud" />
+    <param name="frame_id" value="$(arg frame_id)" />
+    <param name="resolution" value="$(arg resolution)" />
+  </node>
+
+  <!-- Optional: run a SECOND octomap for dynamic layer (RViz can show both). -->
+  <group if="$(arg enable_dynamic_octomap)">
+    <node pkg="octomap_server" type="octomap_server_node" name="octomap_server_dynamic" output="screen">
+      <remap from="cloud_in" to="/ydm/dynamic_cloud" />
+      <param name="frame_id" value="$(arg frame_id)" />
+      <param name="resolution" value="$(arg resolution)" />
+    </node>
+  </group>
+</launch>

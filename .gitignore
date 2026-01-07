@@ -63,12 +63,22 @@ models/*.pt
 
 # Generated pointcloud/visualization outputs
 pcd/
+pcd_dyn/
 frames/
+*.pcd
+*.bt
+*.ot
 *.gif
 *.mp4
 
 cmake_modules/
 cmake-build-debug/
+
+# ROS catkin workspace build outputs
+ros_ws/build/
+ros_ws/devel/
+ros_ws/logs/
+ros_ws/.catkin_tools/
 
 ExecMean.txt
 SessionInfo.txt

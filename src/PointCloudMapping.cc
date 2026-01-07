@@ -24,6 +24,10 @@
 #include <cerrno>
 #include <sys/stat.h>
 
+#ifdef YDM_WITH_ROS
+#include "RosBridge.h"
+#endif
+
 namespace ORB_SLAM3
 {
 
@@ -124,6 +128,7 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
         return;
     
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr pPointCloud(new pcl::PointCloud<pcl::PointXYZRGBA>);
+    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr pPointCloudDynamic(new pcl::PointCloud<pcl::PointXYZRGBA>);
     
     // DEBUG: Check mask propagation
     // NOTE: Printing and especially cv::imwrite() are very expensive; keep them off by default.
@@ -142,29 +147,75 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
         debug_print_count++;
     }
 
-    // 从深度图生成点云，采样间隔为2像素
-    for (int m = 0; m < kf->imDepth.rows; m += 2)
+    // Pixel sampling stride (controls density). Default=2.
+    int pixelStride = 2;
+    if (const char* e = std::getenv("YDM_PCD_PIXEL_STRIDE"))
+    {
+        try {
+            pixelStride = std::max(1, std::stoi(std::string(e)));
+        } catch(...) {
+            pixelStride = 2;
+        }
+    }
+
+    // Depth range filter (meters)
+    float minDepth = 0.05f;
+    float maxDepth = 6.0f;
+    if (const char* e = std::getenv("YDM_PCD_MIN_DEPTH")) { try { minDepth = std::stof(std::string(e)); } catch(...) {} }
+    if (const char* e = std::getenv("YDM_PCD_MAX_DEPTH")) { try { maxDepth = std::stof(std::string(e)); } catch(...) {} }
+    if (minDepth < 0.0f) minDepth = 0.0f;
+    if (maxDepth <= 0.0f) maxDepth = 6.0f;
+
+    // Dynamic mask filter toggle (default on)
+    bool filterDynamic = true;
+    if (const char* e = std::getenv("YDM_PCD_FILTER_DYNAMIC"))
+    {
+        // accept 0/1
+        if (std::string(e) == "0") filterDynamic = false;
+    }
+
+    // Optional: dump dynamic-only point cloud alongside static (default off)
+    bool dumpDynamic = false;
+    if (const char* e = std::getenv("YDM_PCD_DUMP_DYNAMIC"))
+    {
+        if (std::string(e) == "1") dumpDynamic = true;
+    }
+
+    // Depth edge/jump filter toggle and params (default on)
+    bool edgeFilter = true;
+    if (const char* e = std::getenv("YDM_PCD_EDGE_FILTER"))
+    {
+        if (std::string(e) == "0") edgeFilter = false;
+    }
+    int edgeStep = 4;
+    float edgeRel = 0.1f;
+    if (const char* e = std::getenv("YDM_PCD_EDGE_STEP")) { try { edgeStep = std::max(1, std::stoi(std::string(e))); } catch(...) {} }
+    if (const char* e = std::getenv("YDM_PCD_EDGE_REL")) { try { edgeRel = std::stof(std::string(e)); } catch(...) {} }
+    if (edgeRel < 0.0f) edgeRel = 0.0f;
+
+    // 从深度图生成点云（可配置采样间隔）
+    for (int m = 0; m < kf->imDepth.rows; m += pixelStride)
     {
             
-        for (int n = 0; n < kf->imDepth.cols; n += 2)
+        for (int n = 0; n < kf->imDepth.cols; n += pixelStride)
         {
-            // Dynamic object filtering
+            // Dynamic object check (used for filtering and/or optional dynamic dump)
             bool isDynamic = false;
-
-            for (const cv::Mat& mask : kf->mvDynamicMask) {
-                if (mask.empty()) continue; 
-                // Ensure mask size matches? 
-                // if(mask.rows != kf->imDepth.rows) { resize... } -> YOLO mask should be resized. Flow mask is mImGray size.
-                
-                // Safe check bounds
-                if (m < mask.rows && n < mask.cols) {
-                    if(mask.at<uchar>(m, n) == 255) {
-                        isDynamic = true;
-                        break;
+            if (filterDynamic || dumpDynamic)
+            {
+                for (const cv::Mat& mask : kf->mvDynamicMask)
+                {
+                    if (mask.empty()) continue;
+                    if (m < mask.rows && n < mask.cols)
+                    {
+                        if (mask.at<uchar>(m, n) == 255)
+                        {
+                            isDynamic = true;
+                            break;
+                        }
                     }
                 }
             }
-            if (isDynamic) continue;
             float d = 0;
             if (kf->imDepth.type() == CV_32F)
             {
@@ -180,15 +231,15 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
             }
             
             // 过滤无效深度值
-            if (d < 0.05 || d > 6)
+            if (d < minDepth || d > maxDepth)
                 continue;
 
             // Simple edge filtering (depth jump)
-            if (n > 4) {
+            if (edgeFilter && n > edgeStep) {
                 float d_left = 0;
-                if (kf->imDepth.type() == CV_32F) d_left = kf->imDepth.ptr<float>(m)[n-4];
-                else d_left = (float)kf->imDepth.ptr<unsigned short>(m)[n-4] / mDepthMapFactor;
-                if (std::abs(d - d_left) > 0.1 * d) continue; 
+                if (kf->imDepth.type() == CV_32F) d_left = kf->imDepth.ptr<float>(m)[n-edgeStep];
+                else d_left = (float)kf->imDepth.ptr<unsigned short>(m)[n-edgeStep] / mDepthMapFactor;
+                if (std::abs(d - d_left) > edgeRel * d) continue;
             }
             
             pcl::PointXYZRGBA p;
@@ -196,7 +247,7 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
             // 反投影到3D空间
             p.z = d;
             p.x = (n - kf->cx) * p.z / kf->fx;
-            p.y = (m - kf->cy) * p.z / kf->fy; // Flip Y-axis
+            p.y = (m - kf->cy) * p.z / kf->fy;
 
             // 获取颜色信息
             if (rgbChannels == 3)
@@ -221,6 +272,15 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
                 p.b = v;
             }
 
+            if (isDynamic)
+            {
+                if (dumpDynamic)
+                    pPointCloudDynamic->points.push_back(p);
+
+                if (filterDynamic)
+                    continue;
+            }
+
             pPointCloud->points.push_back(p);
         }
     }
@@ -228,18 +288,25 @@ void PointCloudMapping::generatePointCloud(KeyFrame *kf)
     pPointCloud->height = 1;
     pPointCloud->width = pPointCloud->points.size();
     pPointCloud->is_dense = true;
+
+    pPointCloudDynamic->height = 1;
+    pPointCloudDynamic->width = pPointCloudDynamic->points.size();
+    pPointCloudDynamic->is_dense = true;
     
     // 保存到关键帧
     kf->mptrPointCloud = pPointCloud;
+    kf->mptrPointCloudDynamic = pPointCloudDynamic;
 }
 
 void PointCloudMapping::viewer()
 {
     // pcl::visualization::CloudViewer viewer("PointCloud"); // Optional: Enable if PCL window is desired
     const bool enableGlobalMerge = (std::getenv("YDM_PCD_GLOBAL") && std::string(std::getenv("YDM_PCD_GLOBAL")) == "1");
+    const bool dumpDynamic = (std::getenv("YDM_PCD_DUMP_DYNAMIC") && std::string(std::getenv("YDM_PCD_DUMP_DYNAMIC")) == "1");
     // Default: dump one PCD every N keyframes (to reduce IO)
     const int dumpStride = 5;
     bool ensuredDir = false;
+    bool ensuredDynDir = false;
     while (1)
     {
         {
@@ -294,6 +361,33 @@ void PointCloudMapping::viewer()
             Eigen::Matrix4f Twc_f = pKF->GetPoseInverse().matrix();
             pcl::transformPointCloud(*(pKF->mptrPointCloud), *p, Twc_f);
 
+            // Native ROS publish (optional): publish per-keyframe clouds for online OctoMap/RViz.
+#ifdef YDM_WITH_ROS
+            const bool ydm_ros = (std::getenv("YDM_ROS") && std::string(std::getenv("YDM_ROS")) == "1");
+            if(ydm_ros)
+            {
+                // p is already in ORB world (Twc applied). Publish in ORB world; RosBridge will convert to ROS map axes.
+                pcl::PointCloud<pcl::PointXYZRGBA>* dyn = nullptr;
+                pcl::PointCloud<pcl::PointXYZRGBA>::Ptr pd;
+                if(pKF->mptrPointCloudDynamic && !pKF->mptrPointCloudDynamic->empty())
+                {
+                    pd.reset(new pcl::PointCloud<pcl::PointXYZRGBA>);
+                    pcl::transformPointCloud(*(pKF->mptrPointCloudDynamic), *pd, Twc_f);
+                    dyn = pd.get();
+                }
+                ORB_SLAM3::RosBridge::Instance().Publish(*p, dyn, pKF->GetPoseInverse(), 0.0);
+            }
+            else
+            {
+                static bool warned = false;
+                if(!warned)
+                {
+                    warned = true;
+                    std::cout << "[YDM_ROS] Native ROS publishing is compiled in, but disabled. Run with YDM_ROS=1 to publish /ydm/static_cloud and /ydm/dynamic_cloud." << std::endl;
+                }
+            }
+#endif
+
             // Default mode: write per-keyframe PCDs (much safer than merging into a huge aligned vector)
             if(!enableGlobalMerge)
             {
@@ -316,6 +410,30 @@ void PointCloudMapping::viewer()
                 catch(const pcl::IOException &e)
                 {
                     std::cerr << "WARNING: Failed to save " << oss.str() << ": " << e.what() << std::endl;
+                }
+
+                if(dumpDynamic && pKF->mptrPointCloudDynamic && !pKF->mptrPointCloudDynamic->empty())
+                {
+                    if(!ensuredDynDir)
+                    {
+                        if(::mkdir("pcd_dyn", 0755) != 0 && errno != EEXIST)
+                            std::cerr << "WARNING: Failed to create ./pcd_dyn directory (errno=" << errno << ")" << std::endl;
+                        ensuredDynDir = true;
+                    }
+
+                    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr pd(new pcl::PointCloud<pcl::PointXYZRGBA>);
+                    pcl::transformPointCloud(*(pKF->mptrPointCloudDynamic), *pd, Twc_f);
+
+                    std::ostringstream ossd;
+                    ossd << "pcd_dyn/kf_" << std::setw(6) << std::setfill('0') << pKF->mnId << ".pcd";
+                    try
+                    {
+                        pcl::io::savePCDFileBinaryCompressed(ossd.str(), *pd);
+                    }
+                    catch(const pcl::IOException &e)
+                    {
+                        std::cerr << "WARNING: Failed to save " << ossd.str() << ": " << e.what() << std::endl;
+                    }
                 }
                 continue;
             }

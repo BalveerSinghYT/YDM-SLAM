@@ -1,0 +1,4 @@
+<launch>
+  <!-- Convenience wrapper (renamed to avoid duplicate launch name). -->
+  <include file="$(find ydm_octomap_bridge)/launch/octomap_from_pcd.launch" />
+</launch>

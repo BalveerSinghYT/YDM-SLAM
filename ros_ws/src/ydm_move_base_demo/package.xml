@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>ydm_move_base_demo</name>
+  <version>0.0.1</version>
+  <description>Minimal move_base demo that uses YDM-SLAM PointCloud2 topics as voxel-layer obstacle sources (no /map required).</description>
+
+  <maintainer email="noreply@example.com">ydm</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>move_base</exec_depend>
+  <exec_depend>costmap_2d</exec_depend>
+  <exec_depend>base_local_planner</exec_depend>
+  <exec_depend>nav_core</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+
+  <export />
+</package>
