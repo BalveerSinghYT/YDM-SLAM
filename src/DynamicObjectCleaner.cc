@@ -298,37 +298,59 @@ bool DynamicObjectCleaner::CleanRGBD(const cv::Mat &prevGray,
 {
     (void)currDepthMeters;
 
+    cv::Mat flowPrevToCurr, residual, valid, motionMask;
+    float thr = mParams.residualMinPx;
+    if (!ComputeFlowAndResidualRGBD(prevGray, prevDepthMeters, TcwPrev,
+                                    currGray, TcwCurr, K,
+                                    flowPrevToCurr, residual, valid, motionMask, thr))
+        return false;
+
+    return CleanRGBDFromPrecomputed(residual, valid, motionMask, thr,
+                                    instanceIdMask, instanceClassNames,
+                                    prevDynamicRigidMask, flowPrevToCurr,
+                                    currKeypoints, outlierFlags,
+                                    outRefinedDynamicMask, outDynamicRigidMask);
+}
+
+bool DynamicObjectCleaner::ComputeFlowAndResidualRGBD(const cv::Mat &prevGray,
+                                                     const cv::Mat &prevDepthMeters,
+                                                     const Sophus::SE3f &TcwPrev,
+                                                     const cv::Mat &currGray,
+                                                     const Sophus::SE3f &TcwCurr,
+                                                     const Eigen::Matrix3f &K,
+                                                     cv::Mat &outFlowPrevToCurr,
+                                                     cv::Mat &outResidual,
+                                                     cv::Mat &outValidMask,
+                                                     cv::Mat &outMotionMask,
+                                                     float &outThr)
+{
     if (prevGray.empty() || currGray.empty() || prevDepthMeters.empty())
         return false;
     if (prevGray.size() != currGray.size() || prevGray.size() != prevDepthMeters.size())
         return false;
-
-    outlierFlags.assign(currKeypoints.size(), false);
-    outRefinedDynamicMask = cv::Mat::zeros(currGray.size(), CV_8UC1);
-    outDynamicRigidMask = cv::Mat::zeros(currGray.size(), CV_8UC1);
-
-    if (instanceIdMask.empty() || instanceIdMask.type() != CV_32SC1)
-        return true;
+    if (prevGray.type() != CV_8UC1 || currGray.type() != CV_8UC1)
+        return false;
+    if (prevDepthMeters.type() != CV_32FC1)
+        return false;
 
     if (!EnsureFlowNetLoaded())
         return false;
 
-    cv::Mat flowPrevToCurr;
-    if (!mFlowNet.InferFlow(prevGray, currGray, flowPrevToCurr) || flowPrevToCurr.empty())
+    outFlowPrevToCurr.release();
+    if (!mFlowNet.InferFlow(prevGray, currGray, outFlowPrevToCurr) || outFlowPrevToCurr.empty())
         return false;
 
-    cv::Mat egoFlow, valid;
-    ComputeEgoFlow(prevDepthMeters, TcwPrev, TcwCurr, K, egoFlow, valid);
+    cv::Mat egoFlow;
+    ComputeEgoFlow(prevDepthMeters, TcwPrev, TcwCurr, K, egoFlow, outValidMask);
 
-    // Compute residual image: ||f - e||
-    cv::Mat residual = cv::Mat::zeros(currGray.size(), CV_32FC1);
+    outResidual = cv::Mat::zeros(currGray.size(), CV_32FC1);
 #pragma omp parallel for if(currGray.rows * currGray.cols > 640 * 480)
     for (int y = 0; y < currGray.rows; ++y)
     {
-        const uchar *vptr = valid.ptr<uchar>(y);
-        const cv::Vec2f *fptr = flowPrevToCurr.ptr<cv::Vec2f>(y);
+        const uchar *vptr = outValidMask.ptr<uchar>(y);
+        const cv::Vec2f *fptr = outFlowPrevToCurr.ptr<cv::Vec2f>(y);
         const cv::Vec2f *eptr = egoFlow.ptr<cv::Vec2f>(y);
-        float *rptr = residual.ptr<float>(y);
+        float *rptr = outResidual.ptr<float>(y);
         for (int x = 0; x < currGray.cols; ++x)
         {
             if (!vptr[x])
@@ -338,20 +360,70 @@ bool DynamicObjectCleaner::CleanRGBD(const cv::Mat &prevGray,
         }
     }
 
-    cv::Mat motionMask;
-    float thr = mParams.residualMinPx;
-    ComputeMotionMaskIterative(residual, valid, mParams.residualIterations,
+    outThr = mParams.residualMinPx;
+    ComputeMotionMaskIterative(outResidual, outValidMask, mParams.residualIterations,
                                mParams.residualSigmaScale, mParams.residualMinPx,
-                               motionMask, thr);
+                               outMotionMask, outThr);
+
+    return true;
+}
+
+bool DynamicObjectCleaner::CleanRGBDFromPrecomputed(const cv::Mat &residual,
+                                                   const cv::Mat &validMask,
+                                                   const cv::Mat &motionMask,
+                                                   float residualThr,
+                                                   const cv::Mat &instanceIdMask,
+                                                   const std::vector<std::string> &instanceClassNames,
+                                                   const cv::Mat &prevDynamicRigidMask,
+                                                   const cv::Mat &flowPrevToCurr,
+                                                   const std::vector<cv::KeyPoint> &currKeypoints,
+                                                   std::vector<bool> &outlierFlags,
+                                                   cv::Mat &outRefinedDynamicMask,
+                                                   cv::Mat &outDynamicRigidMask)
+{
+    outlierFlags.assign(currKeypoints.size(), false);
+    outRefinedDynamicMask = cv::Mat::zeros(residual.size(), CV_8UC1);
+    outDynamicRigidMask = cv::Mat::zeros(residual.size(), CV_8UC1);
+
+    if (residual.empty() || residual.type() != CV_32FC1)
+        return false;
+    if (validMask.empty() || validMask.type() != CV_8UC1)
+        return false;
+    if (motionMask.empty() || motionMask.type() != CV_8UC1)
+        return false;
+    if (flowPrevToCurr.empty() || flowPrevToCurr.type() != CV_32FC2)
+        return false;
+
+    // If no instance segmentation, we can still prune by residual threshold if configured.
+    const bool hasInstances = (!instanceIdMask.empty() && instanceIdMask.type() == CV_32SC1);
+    if (!hasInstances)
+    {
+        if (mParams.pruneByResidualOutsideInstances)
+        {
+            for (size_t i = 0; i < currKeypoints.size(); ++i)
+            {
+                const int x = cvRound(currKeypoints[i].pt.x);
+                const int y = cvRound(currKeypoints[i].pt.y);
+                if (x < 0 || y < 0 || x >= residual.cols || y >= residual.rows)
+                    continue;
+                if (!validMask.at<uchar>(y, x))
+                    continue;
+                const float r = residual.at<float>(y, x);
+                if (std::isfinite(r) && r > residualThr)
+                    outlierFlags[i] = true;
+            }
+        }
+        return true;
+    }
 
     // Semantic prefilter: non-rigid instances are always dynamic
     cv::Mat nonRigidMask = BuildNonRigidMaskFromInstances(instanceIdMask, instanceClassNames);
 
     // Optional propagation of previous dynamic rigid mask via flow (rigid only)
-    cv::Mat propagatedRigid = cv::Mat::zeros(currGray.size(), CV_8UC1);
+    cv::Mat propagatedRigid = cv::Mat::zeros(residual.size(), CV_8UC1);
     if (mParams.enableMaskPropagation && !prevDynamicRigidMask.empty())
     {
-        propagatedRigid = PropagateMaskWithFlow(prevDynamicRigidMask, flowPrevToCurr, currGray.size());
+        propagatedRigid = PropagateMaskWithFlow(prevDynamicRigidMask, flowPrevToCurr, residual.size());
         if (mParams.propagationDilate > 0)
         {
             const int k = 2 * mParams.propagationDilate + 1;
@@ -363,8 +435,8 @@ bool DynamicObjectCleaner::CleanRGBD(const cv::Mat &prevGray,
     const int totalMotion = cv::countNonZero(motionMask);
     if (totalMotion > 0)
     {
-        const int rows = currGray.rows;
-        const int cols = currGray.cols;
+        const int rows = residual.rows;
+        const int cols = residual.cols;
         const int nInst = static_cast<int>(instanceClassNames.size());
         if (nInst > 0)
         {
@@ -388,7 +460,7 @@ bool DynamicObjectCleaner::CleanRGBD(const cv::Mat &prevGray,
             }
 
             // Add dynamic rigid instances into mask
-            cv::Mat dynamicRigidMask = cv::Mat::zeros(currGray.size(), CV_8UC1);
+            cv::Mat dynamicRigidMask = cv::Mat::zeros(residual.size(), CV_8UC1);
             for (int id = 1; id <= nInst; ++id)
             {
                 const std::string &cls = instanceClassNames[id - 1];
@@ -442,10 +514,10 @@ bool DynamicObjectCleaner::CleanRGBD(const cv::Mat &prevGray,
         bool out = (outRefinedDynamicMask.at<uchar>(y, x) != 0);
         if (!out && mParams.pruneByResidualOutsideInstances)
         {
-            if (valid.at<uchar>(y, x))
+            if (validMask.at<uchar>(y, x))
             {
                 const float r = residual.at<float>(y, x);
-                if (std::isfinite(r) && r > thr)
+                if (std::isfinite(r) && r > residualThr)
                     out = true;
             }
         }

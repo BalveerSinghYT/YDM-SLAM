@@ -75,11 +75,16 @@ void PointCloudMapping::shutdown()
     if(doJoin)
         viewerThread->join();
 
-    // Saving is safe to call multiple times due to empty-cloud guard.
-    save();
-
-    if(!(std::getenv("YDM_PCD_GLOBAL") && std::string(std::getenv("YDM_PCD_GLOBAL")) == "1"))
-        std::cout << "PointCloudMapping: 已输出关键帧点云到 ./pcd/kf_*.pcd（默认模式）" << std::endl;
+    const bool enableGlobalMerge = (std::getenv("YDM_PCD_GLOBAL") && std::string(std::getenv("YDM_PCD_GLOBAL")) == "1");
+    if(enableGlobalMerge)
+    {
+        // Only meaningful when global merge is enabled.
+        save();
+    }
+    else
+    {
+        std::cout << "PointCloudMapping: 默认模式仅输出 ./pcd/kf_*.pcd（不合并全局点云，因此不会生成可用的 result.pcd；如需 result.pcd 请运行时设置 YDM_PCD_GLOBAL=1）" << std::endl;
+    }
 }
 
 void PointCloudMapping::Clear()
@@ -444,13 +449,10 @@ void PointCloudMapping::viewer()
                 
                 // Add new points to global map
                 *globalMap += *p;
-                
-                // Voxel Grid Filter on ENTIRE Global Map
-                // IMPORTANT: Must use a temporary cloud, cannot filter in-place
-                pcl::PointCloud<pcl::PointXYZRGBA>::Ptr tmp(new pcl::PointCloud<pcl::PointXYZRGBA>);
-                voxel->setInputCloud(globalMap);
-                voxel->filter(*tmp);
-                globalMap->swap(*tmp);
+
+                // NOTE: We intentionally avoid running a VoxelGrid filter on the entire
+                // global cloud on every keyframe. Some PCL builds are prone to rare crashes
+                // here (alignment/ABI issues). Downsample offline if needed.
             }
         }
         
@@ -475,29 +477,15 @@ void PointCloudMapping::save()
 
     if(!cloudSnapshot || cloudSnapshot->empty())
     {
-        std::ofstream out("result.pcd", std::ios::out | std::ios::trunc);
-        if(!out.is_open())
-        {
-            std::cerr << "WARNING: Failed to create result.pcd (cannot open for writing)" << std::endl;
-            return;
-        }
-        out << "# .PCD v0.7 - Point Cloud Data file format\n";
-        out << "VERSION 0.7\n";
-        out << "FIELDS x y z rgb\n";
-        out << "SIZE 4 4 4 4\n";
-        out << "TYPE F F F F\n";
-        out << "COUNT 1 1 1 1\n";
-        out << "WIDTH 0\n";
-        out << "HEIGHT 1\n";
-        out << "VIEWPOINT 0 0 0 1 0 0 0\n";
-        out << "POINTS 0\n";
-        out << "DATA ascii\n";
+        std::cerr << "WARNING: result.pcd not saved because global point cloud is empty. "
+                  << "If you want a merged global cloud, run with YDM_PCD_GLOBAL=1, or merge ./pcd/kf_*.pcd offline (tools/merge_pcds.py)." << std::endl;
         return;
     }
 
     try
     {
-        pcl::io::savePCDFile("result.pcd", *cloudSnapshot);
+        // Prefer compressed binary to keep file size manageable.
+        pcl::io::savePCDFileBinaryCompressed("result.pcd", *cloudSnapshot);
     }
     catch(const pcl::IOException &e)
     {
@@ -531,17 +519,9 @@ void PointCloudMapping::updatecloud(Map &curMap)
         {
             // 转换到世界坐标系
             Eigen::Matrix4f Twc_f = currentvpKFs[i]->GetPoseInverse().matrix();
-            Eigen::Matrix4d Twc_d = Twc_f.cast<double>();
-            pcl::transformPointCloud(
-                *(currentvpKFs[i]->mptrPointCloud), *curPointCloud,
-                Twc_d);
+            pcl::transformPointCloud(*(currentvpKFs[i]->mptrPointCloud), *curPointCloud, Twc_f);
             
             *tmpGlobalMap += *curPointCloud;
-
-            // 定期进行体素滤波，避免点云过大
-            voxel->setInputCloud(tmpGlobalMap);
-            voxel->filter(*tmpGlobalMapFilter);
-            tmpGlobalMap->swap(*tmpGlobalMapFilter);
         }
     }
     

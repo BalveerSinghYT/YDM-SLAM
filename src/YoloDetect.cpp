@@ -66,6 +66,11 @@ bool YoloDetection::Detect()
         if (ydm_profile_every < 1) ydm_profile_every = 1;
     }
     static int ydm_detect_calls = 0;
+    static int ydm_window_calls = 0;
+    static double ydm_sum_infer_ms = 0.0;
+    static double ydm_sum_total_ms = 0.0;
+    static int ydm_sum_det = 0;
+
     const auto ydm_t0_all = std::chrono::steady_clock::now();
 
     // loading image
@@ -88,8 +93,11 @@ bool YoloDetection::Detect()
     // std:: cout<< "objectMask size: " << objectMask.size() << " image size: " << image.size() << endl;
 
     const auto ydm_t0_infer = std::chrono::steady_clock::now();
-    if (gYoloSegModel && gYoloSegModel->OnnxDetect(image, result)) {
-        const auto ydm_t1_infer = std::chrono::steady_clock::now();
+    const bool ok_detect = (gYoloSegModel && gYoloSegModel->OnnxDetect(image, result));
+    const auto ydm_t1_infer = std::chrono::steady_clock::now();
+    const double ydm_ms_infer = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(ydm_t1_infer - ydm_t0_infer).count();
+
+    if (ok_detect) {
         mask = cv::Mat::zeros(image.size(), CV_8UC3);
         for (int i = 0; i < result.size(); i++) {
             int left, top;
@@ -151,18 +159,32 @@ bool YoloDetection::Detect()
     else
         cout << "Detect Failed!" << endl;
 
-    // Optional profiling output (rate-limited)
+    // Optional profiling output (averaged, windowed)
     ydm_detect_calls++;
-    if (ydm_profile && (ydm_detect_calls % ydm_profile_every) == 0)
+    const auto ydm_t1_all = std::chrono::steady_clock::now();
+    const double ydm_ms_total = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(ydm_t1_all - ydm_t0_all).count();
+    ydm_window_calls++;
+    ydm_sum_infer_ms += ydm_ms_infer;
+    ydm_sum_total_ms += ydm_ms_total;
+    ydm_sum_det += static_cast<int>(result.size());
+
+    if (ydm_profile && ydm_window_calls >= ydm_profile_every)
     {
-        const auto ydm_t1_all = std::chrono::steady_clock::now();
-        const double ms_infer = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(ydm_t1_all - ydm_t0_infer).count();
-        const double ms_total = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(ydm_t1_all - ydm_t0_all).count();
+        const double avg_infer = ydm_sum_infer_ms / static_cast<double>(ydm_window_calls);
+        const double avg_total = ydm_sum_total_ms / static_cast<double>(ydm_window_calls);
+        const double avg_det = static_cast<double>(ydm_sum_det) / static_cast<double>(ydm_window_calls);
         std::cout << "[YDM][YOLO] call=" << ydm_detect_calls
-                  << " infer~=" << ms_infer << "ms"
-                  << " total=" << ms_total << "ms"
-                  << " det=" << result.size()
+                  << " every=" << ydm_profile_every
+                  << " count=" << ydm_window_calls
+                  << " avg_infer=" << avg_infer << "ms"
+                  << " avg_total=" << avg_total << "ms"
+                  << " avg_det=" << avg_det
                   << std::endl;
+
+        ydm_window_calls = 0;
+        ydm_sum_infer_ms = 0.0;
+        ydm_sum_total_ms = 0.0;
+        ydm_sum_det = 0;
     }
     
     return true;

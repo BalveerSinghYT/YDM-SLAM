@@ -26,6 +26,7 @@
 #include <opencv2/core/persistence.hpp>
 #include <opencv2/core/eigen.hpp>
 
+#include <algorithm>
 #include <iostream>
 
 using namespace std;
@@ -409,6 +410,9 @@ namespace ORB_SLAM3 {
 
         fps_ = readParameter<int>(fSettings,"Camera.fps",found);
         bRGB_ = (bool) readParameter<int>(fSettings,"Camera.RGB",found);
+
+        keyFrameMinFrames_ = 0;
+        keyFrameMaxFrames_ = std::max(1, static_cast<int>(fps_));
     }
 
     void Settings::readIMU(cv::FileStorage &fSettings) {
@@ -480,6 +484,21 @@ namespace ORB_SLAM3 {
         bool found;
 
         thFarPoints_ = readParameter<float>(fSettings,"System.thFarPoints",found,false);
+
+        int minFrames = readParameter<int>(fSettings,"System.KeyFrameMinFrames",found,false);
+        if (found && minFrames >= 0)
+            keyFrameMinFrames_ = minFrames;
+
+        int maxFrames = readParameter<int>(fSettings,"System.KeyFrameMaxFrames",found,false);
+        if (found && maxFrames > 0)
+            keyFrameMaxFrames_ = maxFrames;
+
+        if (keyFrameMaxFrames_ < 1)
+            keyFrameMaxFrames_ = std::max(1, static_cast<int>(fps_));
+        if (keyFrameMinFrames_ < 0)
+            keyFrameMinFrames_ = 0;
+        if (keyFrameMaxFrames_ < keyFrameMinFrames_)
+            keyFrameMaxFrames_ = keyFrameMinFrames_;
     }
 
     void Settings::precomputeRectificationMaps() {
@@ -601,6 +620,8 @@ namespace ORB_SLAM3 {
         }
 
         output << "\t-Sequence FPS: " << settings.fps_ << endl;
+        output << "\t-KeyFrame MinFrames: " << settings.keyFrameMinFrames_ << endl;
+        output << "\t-KeyFrame MaxFrames: " << settings.keyFrameMaxFrames_ << endl;
 
         //Stereo stuff
         if(settings.sensor_ == System::STEREO || settings.sensor_ == System::IMU_STEREO){

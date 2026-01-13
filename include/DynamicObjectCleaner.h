@@ -50,6 +50,38 @@ public:
 
     bool EnsureFlowNetLoaded();
 
+    // Compute dense FlowNet flow + ego-motion compensated residual once, so callers can reuse.
+    // - outFlowPrevToCurr: CV_32FC2
+    // - outResidual: CV_32FC1 (pixel magnitude)
+    // - outValidMask: CV_8UC1 (255 valid)
+    // - outMotionMask: CV_8UC1 (255 moving), derived from robust thresholding on residual
+    // - outThr: robust residual threshold used to build outMotionMask
+    bool ComputeFlowAndResidualRGBD(const cv::Mat &prevGray,
+                                   const cv::Mat &prevDepthMeters,
+                                   const Sophus::SE3f &TcwPrev,
+                                   const cv::Mat &currGray,
+                                   const Sophus::SE3f &TcwCurr,
+                                   const Eigen::Matrix3f &K,
+                                   cv::Mat &outFlowPrevToCurr,
+                                   cv::Mat &outResidual,
+                                   cv::Mat &outValidMask,
+                                   cv::Mat &outMotionMask,
+                                   float &outThr);
+
+    // Same as CleanRGBD, but reuses precomputed flow/residual to avoid running FlowNet twice.
+    bool CleanRGBDFromPrecomputed(const cv::Mat &residual,
+                                  const cv::Mat &validMask,
+                                  const cv::Mat &motionMask,
+                                  float residualThr,
+                                  const cv::Mat &instanceIdMask,
+                                  const std::vector<std::string> &instanceClassNames,
+                                  const cv::Mat &prevDynamicRigidMask,
+                                  const cv::Mat &flowPrevToCurr,
+                                  const std::vector<cv::KeyPoint> &currKeypoints,
+                                  std::vector<bool> &outlierFlags,
+                                  cv::Mat &outRefinedDynamicMask,
+                                  cv::Mat &outDynamicRigidMask);
+
     // Compute refined dynamic mask and mark outlier keypoints.
     // - prev/curr gray: CV_8U (1 channel)
     // - prevDepthMeters: CV_32F depth in meters (same size as images)

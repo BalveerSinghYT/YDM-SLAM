@@ -160,6 +160,14 @@ public:
     cv::Mat mPrevDynamicRigidMask;
     cv::Mat mCurrDynamicRigidMask;
 
+    // Cached dense flow / residual for reuse across modules (computed once per frame)
+    cv::Mat mCurrFlowPrevToCurr;
+    cv::Mat mCurrResidual;
+    cv::Mat mCurrResidualValidMask;
+    cv::Mat mCurrResidualMotionMask;
+    float mCurrResidualThr = 0.0f;
+    long unsigned int mCurrResidualFrameId = 0;
+
     DynamicObjectCleaner mDynamicObjectCleaner;
 
     // Initialization Variables (Monocular)

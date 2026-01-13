@@ -112,6 +112,9 @@ namespace ORB_SLAM3 {
         float viewPointF() {return viewPointF_;}
         float imageViewerScale() {return imageViewerScale_;}
 
+        int keyFrameMinFrames() {return keyFrameMinFrames_;}
+        int keyFrameMaxFrames() {return keyFrameMaxFrames_;}
+
         std::string atlasLoadFile() {return sLoadFrom_;}
         std::string atlasSaveFile() {return sSaveto_;}
 
@@ -227,6 +230,12 @@ namespace ORB_SLAM3 {
          * Other stuff
          */
         float thFarPoints_;
+
+        /*
+         * Keyframe insertion stuff
+         */
+        int keyFrameMinFrames_;
+        int keyFrameMaxFrames_;
 
     };
 };

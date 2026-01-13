@@ -210,7 +210,7 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
         if(const char* e = std::getenv("YDM_PCD_SOR_STD")) { try { thresh = std::stod(std::string(e)); } catch(...) {} }
 
         mpPointCloudMapping = new PointCloudMapping(resolution, meank, thresh, depthMapFactor);
-        std::cout << "点云建图模块已启用：默认每20帧输出一次 ./pcd/kf_*.pcd（世界坐标）；如需合并全局 result.pcd，设置 YDM_PCD_GLOBAL=1" << std::endl;
+        std::cout << "点云建图模块已启用：默认每5个关键帧输出一次 ./pcd/kf_*.pcd（世界坐标，输出路径相对运行时cwd）；如需合并全局 result.pcd，设置 YDM_PCD_GLOBAL=1" << std::endl;
     }
     else
     {

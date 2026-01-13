@@ -621,8 +621,8 @@ namespace ORB_SLAM3
                 mDepthMapFactor = 1.0f / mDepthMapFactor;
         }
 
-        mMinFrames = 0;
-        mMaxFrames = settings->fps();
+        mMinFrames = settings->keyFrameMinFrames();
+        mMaxFrames = settings->keyFrameMaxFrames();
         mbRGB = settings->rgb();
 
         // ORB parameters
@@ -1199,6 +1199,13 @@ namespace ORB_SLAM3
 
         cout << "- fps: " << fps << endl;
 
+        cv::FileNode node_kf = fSettings["System.KeyFrameMinFrames"];
+        if (!node_kf.empty() && node_kf.isInt())
+            mMinFrames = (int)node_kf;
+        node_kf = fSettings["System.KeyFrameMaxFrames"];
+        if (!node_kf.empty() && node_kf.isInt())
+            mMaxFrames = (int)node_kf;
+
         int nRGB = fSettings["Camera.RGB"];
         mbRGB = nRGB;
 
@@ -1570,6 +1577,24 @@ namespace ORB_SLAM3
 
     Sophus::SE3f Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp, string filename)
     {
+            // End-to-end pipeline profiling (per-frame stage timing)
+            const bool ydm_pipe_profile = (std::getenv("YDM_PIPELINE_PROFILE") && std::string(std::getenv("YDM_PIPELINE_PROFILE")) == "1");
+            int ydm_pipe_every = 1;
+            if (const char* env_pe = std::getenv("YDM_PIPELINE_PROFILE_EVERY"))
+            {
+                try { ydm_pipe_every = std::stoi(std::string(env_pe)); } catch (...) { ydm_pipe_every = 1; }
+                if (ydm_pipe_every < 1) ydm_pipe_every = 1;
+            }
+            std::chrono::steady_clock::time_point ydm_pipe_t0;
+            std::chrono::steady_clock::time_point ydm_pipe_t;
+            auto ydm_pipe_ms_since = [](const std::chrono::steady_clock::time_point &a,
+                                        const std::chrono::steady_clock::time_point &b) -> double {
+                return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(b - a).count();
+            };
+            double ydm_ms_prev = 0.0, ydm_ms_yolo = 0.0, ydm_ms_gray = 0.0, ydm_ms_depth = 0.0;
+            double ydm_ms_frame = 0.0, ydm_ms_track = 0.0, ydm_ms_cleanup = 0.0;
+            if (ydm_pipe_profile) { ydm_pipe_t0 = ydm_pipe_t = std::chrono::steady_clock::now(); }
+
         // Store previous frame image for Optical Flow
         if(!mImGray.empty())
             mLastImGray = mImGray.clone();
@@ -1591,12 +1616,26 @@ namespace ORB_SLAM3
             mImDepth = imD.clone();
         }
 
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ydm_ms_prev = ydm_pipe_ms_since(ydm_pipe_t, t1);
+            ydm_pipe_t = t1;
+        }
+
         // Yolo
         cv::Mat InputImage;
         InputImage = imRGB.clone();
         mpDetector->GetImage(InputImage);
         // Always run YOLO every frame.
         mpDetector->Detect();
+
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ydm_ms_yolo = ydm_pipe_ms_since(ydm_pipe_t, t1);
+            ydm_pipe_t = t1;
+        }
 
         // Cache instance-level outputs for DIO-SLAM style logic
         mCurrInstanceIdMask = mpDetector->mInstanceIdMask.empty() ? cv::Mat() : mpDetector->mInstanceIdMask.clone();
@@ -1628,16 +1667,37 @@ namespace ORB_SLAM3
                 cvtColor(mImGray, mImGray, cv::COLOR_BGRA2GRAY);
         }
 
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ydm_ms_gray = ydm_pipe_ms_since(ydm_pipe_t, t1);
+            ydm_pipe_t = t1;
+        }
+
         if ((fabs(mDepthMapFactor - 1.0f) > 1e-5) || imDepth.type() != CV_32F)
             imDepth.convertTo(imDepth, CV_32F, mDepthMapFactor);
 
         // Cache current depth (meters) for DIO-SLAM style ego-motion compensation
         mCurrDepthMeters = imDepth.clone();
 
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ydm_ms_depth = ydm_pipe_ms_since(ydm_pipe_t, t1);
+            ydm_pipe_t = t1;
+        }
+
         if (mSensor == System::RGBD)
             mCurrentFrame = Frame(mImGray, imDepth, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera);
         else if (mSensor == System::IMU_RGBD)
             mCurrentFrame = Frame(mImGray, imDepth, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera, &mLastFrame, *mpImuCalib);
+
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ydm_ms_frame = ydm_pipe_ms_since(ydm_pipe_t, t1);
+            ydm_pipe_t = t1;
+        }
 
         // DIO-SLAM-style pruning is applied inside TrackWithMotionModel() after pose prediction.
 
@@ -1653,7 +1713,35 @@ namespace ORB_SLAM3
         mpDetector->mmDetectMap.clear();
         mpDetector->mask.release();
         mpDetector->mvDynamicMask.clear();
+
         Track();
+
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ydm_ms_track = ydm_pipe_ms_since(ydm_pipe_t, t1);
+            ydm_pipe_t = t1;
+        }
+
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ydm_ms_cleanup = ydm_pipe_ms_since(ydm_pipe_t, t1);
+            const double ydm_ms_total = ydm_pipe_ms_since(ydm_pipe_t0, t1);
+            if ((mCurrentFrame.mnId % ydm_pipe_every) == 0)
+            {
+                std::cout << "[YDM][PIPE][RGBD] F=" << std::setw(6) << mCurrentFrame.mnId
+                          << " Prev=" << std::setw(6) << std::fixed << std::setprecision(2) << ydm_ms_prev << "ms"
+                          << " YOLO=" << std::setw(6) << ydm_ms_yolo << "ms"
+                          << " Gray=" << std::setw(6) << ydm_ms_gray << "ms"
+                          << " Depth=" << std::setw(6) << ydm_ms_depth << "ms"
+                          << " Frame=" << std::setw(6) << ydm_ms_frame << "ms"
+                          << " Track=" << std::setw(6) << ydm_ms_track << "ms"
+                          << " || TOTAL=" << std::setw(7) << ydm_ms_total << "ms"
+                          << " (every=" << ydm_pipe_every << ")"
+                          << std::endl;
+            }
+        }
 
         return mCurrentFrame.GetPose();
     }
@@ -1901,6 +1989,23 @@ namespace ORB_SLAM3
     void Tracking::Track()
     {
 
+        // End-to-end pipeline profiling (core tracking stages)
+        const bool ydm_pipe_profile = (std::getenv("YDM_PIPELINE_PROFILE") && std::string(std::getenv("YDM_PIPELINE_PROFILE")) == "1");
+        int ydm_pipe_every = 1;
+        if (const char* env_pe = std::getenv("YDM_PIPELINE_PROFILE_EVERY"))
+        {
+            try { ydm_pipe_every = std::stoi(std::string(env_pe)); } catch (...) { ydm_pipe_every = 1; }
+            if (ydm_pipe_every < 1) ydm_pipe_every = 1;
+        }
+        std::chrono::steady_clock::time_point ydm_pipe_t0;
+        auto ydm_pipe_ms_since = [](const std::chrono::steady_clock::time_point &a,
+                                    const std::chrono::steady_clock::time_point &b) -> double {
+            return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(b - a).count();
+        };
+        double ydm_ms_preimu = 0.0, ydm_ms_init = 0.0, ydm_ms_pose = 0.0;
+        double ydm_ms_local = 0.0, ydm_ms_draw = 0.0, ydm_ms_kf = 0.0;
+        if (ydm_pipe_profile) ydm_pipe_t0 = std::chrono::steady_clock::now();
+
         if (bStepByStep)
         {
             std::cout << "Tracking: Waiting to the next step" << std::endl;
@@ -1973,6 +2078,10 @@ namespace ORB_SLAM3
 
         if ((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD) && !mbCreatedMap)
         {
+    #ifndef REGISTER_TIMES
+            std::chrono::steady_clock::time_point time_StartPreIMU;
+            if (ydm_pipe_profile) time_StartPreIMU = std::chrono::steady_clock::now();
+    #endif
 #ifdef REGISTER_TIMES
             std::chrono::steady_clock::time_point time_StartPreIMU = std::chrono::steady_clock::now();
 #endif
@@ -1983,6 +2092,12 @@ namespace ORB_SLAM3
             double timePreImu = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(time_EndPreIMU - time_StartPreIMU).count();
             vdIMUInteg_ms.push_back(timePreImu);
 #endif
+
+            if (ydm_pipe_profile)
+            {
+                const auto time_EndPreIMU2 = std::chrono::steady_clock::now();
+                ydm_ms_preimu = ydm_pipe_ms_since(time_StartPreIMU, time_EndPreIMU2);
+            }
         }
         mbCreatedMap = false;
 
@@ -2001,6 +2116,8 @@ namespace ORB_SLAM3
 
         if (mState == NOT_INITIALIZED)
         {
+            std::chrono::steady_clock::time_point t_init0;
+            if (ydm_pipe_profile) t_init0 = std::chrono::steady_clock::now();
             if (mSensor == System::STEREO || mSensor == System::RGBD || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
             {
                 StereoInitialization();
@@ -2010,11 +2127,29 @@ namespace ORB_SLAM3
                 MonocularInitialization();
             }
 
+            if (ydm_pipe_profile)
+            {
+                const auto t_init1 = std::chrono::steady_clock::now();
+                ydm_ms_init = ydm_pipe_ms_since(t_init0, t_init1);
+            }
+
             // mpFrameDrawer->Update(this);
 
             if (mState != OK) // If rightly initialized, mState=OK
             {
                 mLastFrame = Frame(mCurrentFrame);
+
+                if (ydm_pipe_profile && (mCurrentFrame.mnId % ydm_pipe_every) == 0)
+                {
+                    const auto t_end = std::chrono::steady_clock::now();
+                    const double ms_total = ydm_pipe_ms_since(ydm_pipe_t0, t_end);
+                    std::cout << "[YDM][PIPE][TRACK] F=" << std::setw(6) << mCurrentFrame.mnId
+                              << " PreIMU=" << std::setw(6) << std::fixed << std::setprecision(2) << ydm_ms_preimu << "ms"
+                              << " Init=" << std::setw(6) << ydm_ms_init << "ms"
+                              << " || TOTAL=" << std::setw(7) << ms_total << "ms"
+                              << " (every=" << ydm_pipe_every << ")"
+                              << std::endl;
+                }
                 return;
             }
 
@@ -2027,6 +2162,9 @@ namespace ORB_SLAM3
         {
             // System is initialized. Track Frame.
             bool bOK;
+
+            std::chrono::steady_clock::time_point t_pose0;
+            if (ydm_pipe_profile) t_pose0 = std::chrono::steady_clock::now();
 
 #ifdef REGISTER_TIMES
             std::chrono::steady_clock::time_point time_StartPosePred = std::chrono::steady_clock::now();
@@ -2210,6 +2348,12 @@ namespace ORB_SLAM3
             if (!mCurrentFrame.mpReferenceKF)
                 mCurrentFrame.mpReferenceKF = mpReferenceKF;
 
+            if (ydm_pipe_profile)
+            {
+                const auto t_pose1 = std::chrono::steady_clock::now();
+                ydm_ms_pose = ydm_pipe_ms_since(t_pose0, t_pose1);
+            }
+
 #ifdef REGISTER_TIMES
             std::chrono::steady_clock::time_point time_EndPosePred = std::chrono::steady_clock::now();
 
@@ -2225,7 +2369,14 @@ namespace ORB_SLAM3
             {
                 if (bOK)
                 {
+                    std::chrono::steady_clock::time_point t_local0;
+                    if (ydm_pipe_profile) t_local0 = std::chrono::steady_clock::now();
                     bOK = TrackLocalMap();
+                    if (ydm_pipe_profile)
+                    {
+                        const auto t_local1 = std::chrono::steady_clock::now();
+                        ydm_ms_local = ydm_pipe_ms_since(t_local0, t_local1);
+                    }
                 }
                 if (!bOK)
                     cout << "Fail to track local map!" << endl;
@@ -2236,7 +2387,16 @@ namespace ORB_SLAM3
                 // a local map and therefore we do not perform TrackLocalMap(). Once the system relocalizes
                 // the camera we will use the local map again.
                 if (bOK && !mbVO)
+                {
+                    std::chrono::steady_clock::time_point t_local0;
+                    if (ydm_pipe_profile) t_local0 = std::chrono::steady_clock::now();
                     bOK = TrackLocalMap();
+                    if (ydm_pipe_profile)
+                    {
+                        const auto t_local1 = std::chrono::steady_clock::now();
+                        ydm_ms_local = ydm_pipe_ms_since(t_local0, t_local1);
+                    }
+                }
             }
 
             if (bOK)
@@ -2308,9 +2468,16 @@ namespace ORB_SLAM3
 #endif
 
             // Update drawer
+            std::chrono::steady_clock::time_point t_draw0;
+            if (ydm_pipe_profile) t_draw0 = std::chrono::steady_clock::now();
             mpFrameDrawer->Update(this);
             if (mCurrentFrame.isSet())
                 mpMapDrawer->SetCurrentCameraPose(mCurrentFrame.GetPose());
+            if (ydm_pipe_profile)
+            {
+                const auto t_draw1 = std::chrono::steady_clock::now();
+                ydm_ms_draw = ydm_pipe_ms_since(t_draw0, t_draw1);
+            }
 
             if (bOK || mState == RECENTLY_LOST)
             {
@@ -2352,6 +2519,8 @@ namespace ORB_SLAM3
 #ifdef REGISTER_TIMES
                 std::chrono::steady_clock::time_point time_StartNewKF = std::chrono::steady_clock::now();
 #endif
+                std::chrono::steady_clock::time_point t_kf0;
+                if (ydm_pipe_profile) t_kf0 = std::chrono::steady_clock::now();
                 bool bNeedKF = NeedNewKeyFrame();
 
                 // Check if we need to insert a new keyframe
@@ -2359,6 +2528,12 @@ namespace ORB_SLAM3
                 if (bNeedKF && (bOK || (mInsertKFsLost && mState == RECENTLY_LOST &&
                                         (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD))))
                     CreateNewKeyFrame();
+
+                if (ydm_pipe_profile)
+                {
+                    const auto t_kf1 = std::chrono::steady_clock::now();
+                    ydm_ms_kf = ydm_pipe_ms_since(t_kf0, t_kf1);
+                }
 
 #ifdef REGISTER_TIMES
                 std::chrono::steady_clock::time_point time_EndNewKF = std::chrono::steady_clock::now();
@@ -2403,6 +2578,23 @@ namespace ORB_SLAM3
                 mCurrentFrame.mpReferenceKF = mpReferenceKF;
 
             mLastFrame = Frame(mCurrentFrame);
+        }
+
+        if (ydm_pipe_profile && (mCurrentFrame.mnId % ydm_pipe_every) == 0)
+        {
+            const auto t_end = std::chrono::steady_clock::now();
+            const double ms_total = ydm_pipe_ms_since(ydm_pipe_t0, t_end);
+            const double ms_other = ms_total - (ydm_ms_preimu + ydm_ms_init + ydm_ms_pose + ydm_ms_local + ydm_ms_draw + ydm_ms_kf);
+            std::cout << "[YDM][PIPE][TRACK] F=" << std::setw(6) << mCurrentFrame.mnId
+                      << " PreIMU=" << std::setw(6) << std::fixed << std::setprecision(2) << ydm_ms_preimu << "ms"
+                      << " Pose=" << std::setw(6) << ydm_ms_pose << "ms"
+                      << " Local=" << std::setw(6) << ydm_ms_local << "ms"
+                      << " Draw=" << std::setw(6) << ydm_ms_draw << "ms"
+                      << " KF=" << std::setw(6) << ydm_ms_kf << "ms"
+                      << " Other=" << std::setw(6) << ms_other << "ms"
+                      << " || TOTAL=" << std::setw(7) << ms_total << "ms"
+                      << " (every=" << ydm_pipe_every << ")"
+                      << std::endl;
         }
 
         if (mState == OK || mState == RECENTLY_LOST)
@@ -2822,8 +3014,31 @@ namespace ORB_SLAM3
 
     bool Tracking::TrackReferenceKeyFrame()
     {
+        const bool ydm_pipe_profile = (std::getenv("YDM_PIPELINE_PROFILE") && std::string(std::getenv("YDM_PIPELINE_PROFILE")) == "1");
+        int ydm_pipe_every = 1;
+        if (const char* env_pe = std::getenv("YDM_PIPELINE_PROFILE_EVERY"))
+        {
+            try { ydm_pipe_every = std::stoi(std::string(env_pe)); } catch (...) { ydm_pipe_every = 1; }
+            if (ydm_pipe_every < 1) ydm_pipe_every = 1;
+        }
+        std::chrono::steady_clock::time_point t0;
+        std::chrono::steady_clock::time_point t;
+        auto ms_since = [](const std::chrono::steady_clock::time_point &a,
+                           const std::chrono::steady_clock::time_point &b) -> double {
+            return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(b - a).count();
+        };
+        double ms_bow = 0.0, ms_match = 0.0, ms_opt = 0.0, ms_out = 0.0;
+        if (ydm_pipe_profile) { t0 = t = std::chrono::steady_clock::now(); }
+
         // Compute Bag of Words vector
         mCurrentFrame.ComputeBoW();
+
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ms_bow = ms_since(t, t1);
+            t = t1;
+        }
 
         // We perform first an ORB matching with the reference keyframe
         // If enough matches are found we setup a PnP solver
@@ -2831,6 +3046,13 @@ namespace ORB_SLAM3
         vector<MapPoint *> vpMapPointMatches;
 
         int nmatches = matcher.SearchByBoW(mpReferenceKF, mCurrentFrame, vpMapPointMatches);
+
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ms_match = ms_since(t, t1);
+            t = t1;
+        }
 
         if (nmatches < 15)
         {
@@ -2845,6 +3067,13 @@ namespace ORB_SLAM3
 
         // cout << " TrackReferenceKeyFrame mLastFrame.mTcw:  " << mLastFrame.mTcw << endl;
         Optimizer::PoseOptimization(&mCurrentFrame);
+
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ms_opt = ms_since(t, t1);
+            t = t1;
+        }
 
         // Discard outliers
         int nmatchesMap = 0;
@@ -2873,6 +3102,23 @@ namespace ORB_SLAM3
                 }
                 else if (mCurrentFrame.mvpMapPoints[i]->Observations() > 0)
                     nmatchesMap++;
+            }
+        }
+
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ms_out = ms_since(t, t1);
+            const double ms_total = ms_since(t0, t1);
+            if ((mCurrentFrame.mnId % ydm_pipe_every) == 0)
+            {
+                std::cout << "[YDM][PIPE][REFKF] F=" << std::setw(6) << mCurrentFrame.mnId
+                          << " BoW=" << std::setw(6) << std::fixed << std::setprecision(2) << ms_bow << "ms"
+                          << " Match=" << std::setw(6) << ms_match << "ms"
+                          << " Opt=" << std::setw(6) << ms_opt << "ms"
+                          << " Out=" << std::setw(6) << ms_out << "ms"
+                          << " || TOTAL=" << std::setw(7) << ms_total << "ms"
+                          << std::endl;
             }
         }
 
@@ -2958,11 +3204,36 @@ namespace ORB_SLAM3
 
     bool Tracking::TrackWithMotionModel()
     {
+        const bool ydm_pipe_profile = (std::getenv("YDM_PIPELINE_PROFILE") && std::string(std::getenv("YDM_PIPELINE_PROFILE")) == "1");
+        int ydm_pipe_every = 1;
+        if (const char* env_pe = std::getenv("YDM_PIPELINE_PROFILE_EVERY"))
+        {
+            try { ydm_pipe_every = std::stoi(std::string(env_pe)); } catch (...) { ydm_pipe_every = 1; }
+            if (ydm_pipe_every < 1) ydm_pipe_every = 1;
+        }
+        std::chrono::steady_clock::time_point t0;
+        std::chrono::steady_clock::time_point t;
+        auto ms_since = [](const std::chrono::steady_clock::time_point &a,
+                           const std::chrono::steady_clock::time_point &b) -> double {
+            return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(b - a).count();
+        };
+        double ms_update_last = 0.0, ms_pose_pred = 0.0;
+        double ms_residual = 0.0, ms_cleaner = 0.0, ms_verify = 0.0;
+        double ms_match_proj = 0.0, ms_match_wide = 0.0, ms_opt = 0.0, ms_out = 0.0;
+        if (ydm_pipe_profile) { t0 = t = std::chrono::steady_clock::now(); }
+
         ORBmatcher matcher(0.9, true);
 
         // Update last frame pose according to its reference keyframe
         // Create "visual odometry" points if in Localization Mode
         UpdateLastFrame();
+
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ms_update_last = ms_since(t, t1);
+            t = t1;
+        }
 
         if (mpAtlas->isImuInitialized() && (mCurrentFrame.mnId > mnLastRelocFrameId + mnFramesToResetIMU))
         {
@@ -2975,45 +3246,103 @@ namespace ORB_SLAM3
             mCurrentFrame.SetPose(mVelocity * mLastFrame.GetPose());
         }
 
-        // DIO-SLAM style dynamic keypoint filtering (requires predicted pose)
-        if ((mSensor == System::RGBD || mSensor == System::IMU_RGBD) &&
-            !mLastImGray.empty() && !mPrevDepthMeters.empty() &&
-            !mCurrInstanceIdMask.empty() && mCurrInstanceIdMask.type() == CV_32SC1)
+        if (ydm_pipe_profile)
         {
-            std::vector<bool> outFlags;
-            cv::Mat refinedMask;
-            cv::Mat dynamicRigidMask;
+            const auto t1 = std::chrono::steady_clock::now();
+            ms_pose_pred = ms_since(t, t1);
+            t = t1;
+        }
+
+        // DIO-SLAM style dynamic keypoint filtering (requires predicted pose)
+        // Compute FlowNet + ego-compensated residual ONCE, then reuse across modules.
+        if ((mSensor == System::RGBD || mSensor == System::IMU_RGBD) &&
+            !mLastImGray.empty() && !mPrevDepthMeters.empty())
+        {
             const Sophus::SE3f TcwPrev = mLastFrame.GetPose();
             const Sophus::SE3f TcwCurr = mCurrentFrame.GetPose();
 
-            const bool ok = mDynamicObjectCleaner.CleanRGBD(
+            cv::Mat flowPrevToCurr, residual, validMask, motionMask;
+            float thr = 0.0f;
+            const bool okResidual = mDynamicObjectCleaner.ComputeFlowAndResidualRGBD(
                 mLastImGray,
                 mPrevDepthMeters,
                 TcwPrev,
                 mImGray,
-                mCurrDepthMeters,
                 TcwCurr,
                 mCurrentFrame.mK_,
-                mCurrInstanceIdMask,
-                mCurrInstanceClassNames,
-                mPrevDynamicRigidMask,
-                mCurrentFrame.mvKeysUn,
-                outFlags,
-                refinedMask,
-                dynamicRigidMask);
+                flowPrevToCurr,
+                residual,
+                validMask,
+                motionMask,
+                thr);
 
-            if (ok && !outFlags.empty())
+            if (ydm_pipe_profile)
             {
-                // Mark outliers early so matching utilities will skip them
-                const size_t n = std::min(outFlags.size(), mCurrentFrame.mvbOutlier.size());
-                for (size_t i = 0; i < n; ++i)
-                    if (outFlags[i])
-                        mCurrentFrame.mvbOutlier[i] = true;
+                const auto t1 = std::chrono::steady_clock::now();
+                ms_residual = ms_since(t, t1);
+                t = t1;
+            }
 
-                mCurrentFrame.mvDynamicMask.clear();
-                mCurrentFrame.mvDynamicMask.push_back(refinedMask);
+            if (okResidual)
+            {
+                mCurrFlowPrevToCurr = flowPrevToCurr;
+                mCurrResidual = residual;
+                mCurrResidualValidMask = validMask;
+                mCurrResidualMotionMask = motionMask;
+                mCurrResidualThr = thr;
+                mCurrResidualFrameId = mCurrentFrame.mnId;
 
-                mCurrDynamicRigidMask = dynamicRigidMask.clone();
+                // If we have instance segmentation, produce refined semantic+motion mask and outliers.
+                if (!mCurrInstanceIdMask.empty() && mCurrInstanceIdMask.type() == CV_32SC1)
+                {
+                    std::vector<bool> outFlags;
+                    cv::Mat refinedMask;
+                    cv::Mat dynamicRigidMask;
+                    const bool ok = mDynamicObjectCleaner.CleanRGBDFromPrecomputed(
+                        mCurrResidual,
+                        mCurrResidualValidMask,
+                        mCurrResidualMotionMask,
+                        mCurrResidualThr,
+                        mCurrInstanceIdMask,
+                        mCurrInstanceClassNames,
+                        mPrevDynamicRigidMask,
+                        mCurrFlowPrevToCurr,
+                        mCurrentFrame.mvKeysUn,
+                        outFlags,
+                        refinedMask,
+                        dynamicRigidMask);
+
+                    if (ydm_pipe_profile)
+                    {
+                        const auto t1 = std::chrono::steady_clock::now();
+                        ms_cleaner = ms_since(t, t1);
+                        t = t1;
+                    }
+
+                    if (ok && !outFlags.empty())
+                    {
+                        // Mark outliers early so matching utilities will skip them
+                        const size_t n = std::min(outFlags.size(), mCurrentFrame.mvbOutlier.size());
+                        for (size_t i = 0; i < n; ++i)
+                            if (outFlags[i])
+                                mCurrentFrame.mvbOutlier[i] = true;
+
+                        mCurrentFrame.mvDynamicMask.clear();
+                        mCurrentFrame.mvDynamicMask.push_back(refinedMask);
+
+                        mCurrDynamicRigidMask = dynamicRigidMask.clone();
+                    }
+                }
+
+                // Apply additional depth+box logic using the same residual cache (no extra FlowNet).
+                VerifyAndPruneFeatures();
+
+                if (ydm_pipe_profile)
+                {
+                    const auto t1 = std::chrono::steady_clock::now();
+                    ms_verify = ms_since(t, t1);
+                    t = t1;
+                }
             }
         }
 
@@ -3029,6 +3358,13 @@ namespace ORB_SLAM3
 
         int nmatches = matcher.SearchByProjection(mCurrentFrame, mLastFrame, th, mSensor == System::MONOCULAR || mSensor == System::IMU_MONOCULAR);
 
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ms_match_proj = ms_since(t, t1);
+            t = t1;
+        }
+
         // If few matches, uses a wider window search
         if (nmatches < 20)
         {
@@ -3037,6 +3373,13 @@ namespace ORB_SLAM3
 
             nmatches = matcher.SearchByProjection(mCurrentFrame, mLastFrame, 2 * th, mSensor == System::MONOCULAR || mSensor == System::IMU_MONOCULAR);
             Verbose::PrintMess("Matches with wider search: " + to_string(nmatches), Verbose::VERBOSITY_NORMAL);
+
+            if (ydm_pipe_profile)
+            {
+                const auto t1 = std::chrono::steady_clock::now();
+                ms_match_wide = ms_since(t, t1);
+                t = t1;
+            }
         }
 
         if (nmatches < 20)
@@ -3050,6 +3393,13 @@ namespace ORB_SLAM3
 
         // Optimize frame pose with all matches
         Optimizer::PoseOptimization(&mCurrentFrame);
+
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ms_opt = ms_since(t, t1);
+            t = t1;
+        }
 
         // Discard outliers
         int nmatchesMap = 0;
@@ -3076,6 +3426,28 @@ namespace ORB_SLAM3
                 }
                 else if (mCurrentFrame.mvpMapPoints[i]->Observations() > 0)
                     nmatchesMap++;
+            }
+        }
+
+        if (ydm_pipe_profile)
+        {
+            const auto t1 = std::chrono::steady_clock::now();
+            ms_out = ms_since(t, t1);
+            const double ms_total = ms_since(t0, t1);
+            if ((mCurrentFrame.mnId % ydm_pipe_every) == 0)
+            {
+                std::cout << "[YDM][PIPE][MM] F=" << std::setw(6) << mCurrentFrame.mnId
+                          << " UpdLast=" << std::setw(6) << std::fixed << std::setprecision(2) << ms_update_last << "ms"
+                          << " PosePred=" << std::setw(6) << ms_pose_pred << "ms"
+                          << " Residual=" << std::setw(6) << ms_residual << "ms"
+                          << " Cleaner=" << std::setw(6) << ms_cleaner << "ms"
+                          << " Verify=" << std::setw(6) << ms_verify << "ms"
+                          << " Match=" << std::setw(6) << ms_match_proj << "ms"
+                          << " Wide=" << std::setw(6) << ms_match_wide << "ms"
+                          << " Opt=" << std::setw(6) << ms_opt << "ms"
+                          << " Out=" << std::setw(6) << ms_out << "ms"
+                          << " || TOTAL=" << std::setw(7) << ms_total << "ms"
+                          << std::endl;
             }
         }
 
@@ -3207,6 +3579,14 @@ namespace ORB_SLAM3
 
     bool Tracking::NeedNewKeyFrame()
     {
+        const bool ydm_kf_debug = (std::getenv("YDM_KF_DEBUG") &&
+                                   std::string(std::getenv("YDM_KF_DEBUG")) == "1");
+        auto kf_log = [&](const std::string &msg)
+        {
+            if (ydm_kf_debug)
+                std::cout << "[YDM][KF] F=" << mCurrentFrame.mnId << " " << msg << std::endl;
+        };
+
         if ((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD) && !mpAtlas->GetCurrentMap()->isImuInitialized())
         {
             if (mSensor == System::IMU_MONOCULAR && (mCurrentFrame.mTimeStamp - mpLastKeyFrame->mTimeStamp) >= 0.25)
@@ -3214,11 +3594,17 @@ namespace ORB_SLAM3
             else if ((mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD) && (mCurrentFrame.mTimeStamp - mpLastKeyFrame->mTimeStamp) >= 0.25)
                 return true;
             else
+            {
+                kf_log("IMU not initialized -> false");
                 return false;
+            }
         }
 
         if (mbOnlyTracking)
+        {
+            kf_log("mbOnlyTracking=1 -> false");
             return false;
+        }
 
         // If Local Mapping is freezed by a Loop Closure do not insert keyframes
         if (mpLocalMapper->isStopped() || mpLocalMapper->stopRequested())
@@ -3227,6 +3613,7 @@ namespace ORB_SLAM3
             {
                 std::cout << "NeedNewKeyFrame: localmap stopped" << std::endl;
             }*/
+            kf_log("LocalMapping stopped -> false");
             return false;
         }
 
@@ -3235,6 +3622,7 @@ namespace ORB_SLAM3
         // Do not insert keyframes if not enough frames have passed from last relocalisation
         if (mCurrentFrame.mnId < mnLastRelocFrameId + mMaxFrames && nKFs > mMaxFrames)
         {
+            kf_log("Reloc window -> false");
             return false;
         }
 
@@ -3329,12 +3717,32 @@ namespace ORB_SLAM3
         else
             c4 = false;
 
+        if (ydm_kf_debug)
+        {
+            std::ostringstream oss;
+            oss << "nKFs=" << nKFs
+                << " nRefMatches=" << nRefMatches
+                << " inliers=" << mnMatchesInliers
+                << " nTrackedClose=" << nTrackedClose
+                << " nNonTrackedClose=" << nNonTrackedClose
+                << " bNeedToInsertClose=" << (bNeedToInsertClose ? 1 : 0)
+                << " c1a=" << c1a
+                << " c1b=" << c1b
+                << " c1c=" << c1c
+                << " c2=" << c2
+                << " c3=" << c3
+                << " c4=" << c4
+                << " LocalMappingIdle=" << (bLocalMappingIdle ? 1 : 0);
+            kf_log(oss.str());
+        }
+
         if (((c1a || c1b || c1c) && c2) || c3 || c4)
         {
             // If the mapping accepts keyframes, insert keyframe.
             // Otherwise send a signal to interrupt BA
             if (bLocalMappingIdle || mpLocalMapper->IsInitializing())
             {
+                kf_log("Insert KF -> true");
                 return true;
             }
             else
@@ -3343,19 +3751,29 @@ namespace ORB_SLAM3
                 if (mSensor != System::MONOCULAR && mSensor != System::IMU_MONOCULAR)
                 {
                     if (mpLocalMapper->KeyframesInQueue() < 3)
+                    {
+                        kf_log("InterruptBA + queue<3 -> true");
                         return true;
+                    }
                     else
+                    {
+                        kf_log("InterruptBA + queue>=3 -> false");
                         return false;
+                    }
                 }
                 else
                 {
                     // std::cout << "NeedNewKeyFrame: localmap is busy" << std::endl;
+                    kf_log("LocalMapping busy (mono) -> false");
                     return false;
                 }
             }
         }
         else
+        {
+            kf_log("Conditions not met -> false");
             return false;
+        }
     }
 
     void Tracking::CreateNewKeyFrame()
@@ -4458,10 +4876,26 @@ void Tracking::VerifyAndPruneFeatures() {
         return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(b - a).count();
     };
 
+    // Windowed profiling accumulators (counted per Verify call, not per frame ID)
+    static int ydm_verify_calls = 0;
+    static int ydm_window_calls = 0;
+    static double ydm_sum_depth_ms = 0.0;
+    static double ydm_sum_yolo_union_ms = 0.0;
+    static double ydm_sum_refined_ms = 0.0;
+    static double ydm_sum_box_ms = 0.0;
+    static double ydm_sum_mask_save_ms = 0.0;
+    static double ydm_sum_prune_ms = 0.0;
+    static double ydm_sum_total_ms = 0.0;
+
     // 0. 安全检查
     // 使用 Tracking 类的 mImDepth 成员，而不是 Frame 的
+    // 该函数默认复用 TrackWithMotionModel() 中缓存的 residual（FlowNet + ego compensation）。
     if(mImDepth.empty() || mpORBextractorLeft->mvDynamicArea.empty())
         return;
+    const bool has_residual_cache = (!mCurrResidual.empty() && !mCurrResidualValidMask.empty() &&
+                                    mCurrResidual.type() == CV_32FC1 && mCurrResidualValidMask.type() == CV_8UC1 &&
+                                    mCurrResidual.size() == mImGray.size() &&
+                                    mCurrResidualFrameId == mCurrentFrame.mnId);
 
     // 重要：mImDepth 在 GrabImageRGBD() 里保存的是原始深度图（常见为 CV_16U），
     // 但 GetRefinedDynamicMask() 按 CV_32F(米) 读取深度并做阈值切割。
@@ -4518,27 +4952,29 @@ void Tracking::VerifyAndPruneFeatures() {
         vRects.push_back(r);
     }
 
-    cv::Mat refined_mask = GetRefinedDynamicMask(depth_for_mask, vRects);
+    cv::Mat depth_refined_mask = GetRefinedDynamicMask(depth_for_mask, vRects);
 
     const auto ydm_t_refined = std::chrono::steady_clock::now();
     const double ydm_ms_refined = ydm_ms_since(ydm_t, ydm_t_refined);
     ydm_t = ydm_t_refined;
 
-    // 将 YOLO mask 作为保底并入 refined_mask，避免动态目标被深度细化漏检
-    // 如果深度 refined 完全无效（比如深度缺失），也能回退到 YOLO mask。
-    if (!yolo_union.empty())
+    // 组合 mask：优先保留已有的 refined mask（例如 DynamicObjectCleaner 已经写入 mCurrentFrame.mvDynamicMask），
+    // 再与深度 refined + YOLO union 做并集，避免丢弃任意一路的动态判断。
+    cv::Mat refined_mask = cv::Mat::zeros(depth_for_mask.size(), CV_8UC1);
+    if (!mCurrentFrame.mvDynamicMask.empty() && !mCurrentFrame.mvDynamicMask[0].empty())
     {
-        const int nz_refined = cv::countNonZero(refined_mask);
-        if (nz_refined == 0)
-        {
-            refined_mask = yolo_union.clone();
-        }
-        else
-        {
-            cv::bitwise_or(refined_mask, yolo_union, refined_mask);
-        }
+        cv::Mat m0 = mCurrentFrame.mvDynamicMask[0];
+        if (m0.size() != refined_mask.size())
+            cv::resize(m0, m0, refined_mask.size(), 0, 0, cv::INTER_NEAREST);
+        if (m0.type() != CV_8UC1)
+            m0.convertTo(m0, CV_8UC1);
+        refined_mask = m0.clone();
     }
-    cv::Mat refined_mask_1=refined_mask;
+    cv::bitwise_or(refined_mask, depth_refined_mask, refined_mask);
+    if (!yolo_union.empty())
+        cv::bitwise_or(refined_mask, yolo_union, refined_mask);
+
+    cv::Mat refined_mask_1 = refined_mask;
     // Step B: 预处理 - 基于光流判断每个 YOLO 框的动静状态
     // 我们统计每个框内的特征点，看有多少比例是"显著运动"的 (diff > 2.5)
     // 如果大部分是静止的，说明这个框（例如坐着的人）是静态物体，我们需要将其从 Mask 中移除，
@@ -4551,292 +4987,12 @@ void Tracking::VerifyAndPruneFeatures() {
     };
     std::map<int, BoxStats> box_stats_map; // Index in mvDynamicArea -> Stats
 
-    // 准备光流
-    bool bCheckFlow = !mLastImGray.empty() && !mImGray.empty();
-    std::vector<cv::Point2f> vPtsCurr;
-    std::vector<cv::Point2f> vPtsPrev;
-    std::vector<uchar> status;
-    std::vector<float> err;
-    float median_u=0, median_v=0;
+    // 准备运动证据：默认使用 residual cache（FlowNet + ego compensation）
+    const bool bCheckMotion = has_residual_cache;
 
-    // 可选：使用光流网络（ONNX）替代 LK。
-    // 默认行为（无环境变量时）：
-    // - 默认启用 FastFlowNet ONNX（若加载失败自动回退 LK）
-    // - 默认模型路径：FastFlowNet/export/fastflownet.onnx（相对当前工作目录）
-    // - 默认 kind：FASTFLOWNET（用于选择 FastFlowNet 的预处理/后处理）
-    // 用法（显式配置/覆盖）：
-    //   YDM_USE_FLOW_NET=1           # 启用（默认已启用）
-    //   YDM_USE_FLOW_NET=0           # 禁用
-    //   YDM_FLOW_NET_MODEL_PATH=/abs/path/to/flow.onnx
-    //   YDM_FLOW_NET_KIND=FASTFLOWNET
-    // 说明：
-    // - 支持两类模型输入：
-    //   1) 2-input: img1,img2 分别为 [1,3,H,W]
-    //   2) 1-input(FlowNetS 常见): input 为 [1,6,H,W] = concat(img1,img2)
-    // - 模型应输出像素级 flow（img1->img2），我们在这里调用顺序为 curr->prev。
-    const char* env_use_flow_net = std::getenv("YDM_USE_FLOW_NET");
-    const bool use_flow_net = !(env_use_flow_net && std::string(env_use_flow_net) == "0");
-
-    // Provide defaults for FastFlowNet when env vars are not set.
-    if (!std::getenv("YDM_FLOW_NET_KIND"))
-        setenv("YDM_FLOW_NET_KIND", "FASTFLOWNET", 0);
-
-    const char* flow_model_path = std::getenv("YDM_FLOW_NET_MODEL_PATH");
-    std::string flow_model_path_fallback;
-    if (!flow_model_path || std::string(flow_model_path).empty())
-    {
-        flow_model_path_fallback = "FastFlowNet/export/fastflownet.onnx";
-        flow_model_path = flow_model_path_fallback.c_str();
-    }
-    static std::unique_ptr<FlowNetOnnx> sFlowNet;
-    static std::mutex sFlowNetMutex;
-
-    // 可选参数（环境变量）
-    // - YDM_FLOW_FB_TH：forward-backward 一致性阈值（像素），默认 1.5
-    // - YDM_FLOW_RANSAC_REPROJ_TH：RANSAC 拟合阈值（像素），默认 3.0
-    float fb_th = 1.5f;
-    if (const char *env_fb = std::getenv("YDM_FLOW_FB_TH"))
-    {
-        try { fb_th = std::stof(std::string(env_fb)); } catch (...) { fb_th = 1.5f; }
-        if (fb_th < 0.1f) fb_th = 0.1f;
-    }
-    double ransac_reproj_th = 3.0;
-    if (const char *env_ransac = std::getenv("YDM_FLOW_RANSAC_REPROJ_TH"))
-    {
-        try { ransac_reproj_th = std::stod(std::string(env_ransac)); } catch (...) { ransac_reproj_th = 3.0; }
-        if (ransac_reproj_th < 0.5) ransac_reproj_th = 0.5;
-    }
-
-    if(bCheckFlow) {
-        for(int i=0; i<mCurrentFrame.N; i++) vPtsCurr.push_back(mCurrentFrame.mvKeysUn[i].pt);
-
-        bool flow_ok = false;
-        cv::Mat dense_flow;
-        const bool flow_net_fb = (std::getenv("YDM_FLOW_NET_FB") && std::string(std::getenv("YDM_FLOW_NET_FB")) == "1");
-        if (use_flow_net && flow_model_path && std::string(flow_model_path).size() > 0)
-        {
-            std::lock_guard<std::mutex> lock(sFlowNetMutex);
-            if (!sFlowNet)
-                sFlowNet.reset(new FlowNetOnnx());
-            if (!sFlowNet->IsLoaded())
-            {
-                static bool sLogged = false;
-                if (!sLogged)
-                {
-                    const char* kind = std::getenv("YDM_FLOW_NET_KIND");
-                    std::cout << "[YDM] FlowNetOnnx loading model: " << flow_model_path
-                              << " (YDM_FLOW_NET_KIND=" << (kind ? kind : "<default>") << ")" << std::endl;
-                    sLogged = true;
-                }
-                flow_ok = sFlowNet->ReadModel(std::string(flow_model_path));
-            }
-            else
-                flow_ok = true;
-
-            if (flow_ok)
-                flow_ok = sFlowNet->InferFlow(mImGray, mLastImGray, dense_flow);
-
-            if (flow_ok && !dense_flow.empty())
-            {
-                // Optional: save dense flow visualization to disk (very slow!).
-                // Default: DISABLED. Enable with YDM_SAVE_DENSE_FLOW=1
-                const char* env_save_df = std::getenv("YDM_SAVE_DENSE_FLOW");
-                const bool save_dense_flow = (env_save_df && std::string(env_save_df) == "1");
-                if (save_dense_flow)
-                {
-                    static bool sFlowDirReady = false;
-                    if (!sFlowDirReady)
-                    {
-                        const int rc = mkdir("flow-mask", 0755);
-                        if (rc == 0 || errno == EEXIST)
-                            sFlowDirReady = true;
-                    }
-
-                    if (sFlowDirReady)
-                    {
-                        // Visualize flow: hue=angle, value=magnitude.
-                        cv::Mat fx, fy;
-                        std::vector<cv::Mat> ch;
-                        cv::split(dense_flow, ch);
-                        if (ch.size() == 2)
-                        {
-                            fx = ch[0];
-                            fy = ch[1];
-
-                            cv::Mat mag, ang;
-                            cv::cartToPolar(fx, fy, mag, ang, false);
-
-                            // Scale magnitude for visualization.
-                            // - YDM_FLOW_VIZ_MAX: max magnitude (pixels) mapped to value=255. Default 15.
-                            float viz_max = 15.0f;
-                            if (const char* env_vm = std::getenv("YDM_FLOW_VIZ_MAX"))
-                            {
-                                try { viz_max = std::stof(std::string(env_vm)); } catch (...) { viz_max = 15.0f; }
-                                if (viz_max <= 1e-3f) viz_max = 15.0f;
-                            }
-
-                            cv::Mat v;
-                            mag.convertTo(v, CV_32F, 1.0f / viz_max);
-                            cv::threshold(v, v, 1.0, 1.0, cv::THRESH_TRUNC);
-                            v *= 255.0f;
-
-                            // Hue in [0,180): OpenCV HSV uses H in [0,180] for 8-bit.
-                            cv::Mat h;
-                            ang.convertTo(h, CV_32F, 180.0 / CV_PI / 2.0);
-                            cv::Mat s = cv::Mat::ones(h.size(), CV_32F) * 255.0f;
-
-                            cv::Mat hsv;
-                            std::vector<cv::Mat> hsv_ch{h, s, v};
-                            cv::merge(hsv_ch, hsv);
-                            hsv.convertTo(hsv, CV_8UC3);
-
-                            cv::Mat bgr;
-                            cv::cvtColor(hsv, bgr, cv::COLOR_HSV2BGR);
-
-                            std::ostringstream oss;
-                            oss << "flow-mask/flow_" << std::setw(6) << std::setfill('0') << mCurrentFrame.mnId << ".png";
-                            try { cv::imwrite(oss.str(), bgr); } catch (...) {}
-                        }
-                    }
-                }
-
-                // 从 dense flow 采样得到每个关键点的 prev 位置
-                vPtsPrev.resize(vPtsCurr.size());
-                status.assign(vPtsCurr.size(), 0);
-                for (size_t i = 0; i < vPtsCurr.size(); ++i)
-                {
-                    const int x = cvRound(vPtsCurr[i].x);
-                    const int y = cvRound(vPtsCurr[i].y);
-                    if (x < 0 || x >= dense_flow.cols || y < 0 || y >= dense_flow.rows)
-                        continue;
-                    const cv::Vec2f f = dense_flow.at<cv::Vec2f>(y, x);
-                    const float px = vPtsCurr[i].x + f[0];
-                    const float py = vPtsCurr[i].y + f[1];
-                    if (px < 0.f || px >= (float)mLastImGray.cols || py < 0.f || py >= (float)mLastImGray.rows)
-                        continue;
-                    vPtsPrev[i] = cv::Point2f(px, py);
-                    status[i] = 1;
-                }
-            }
-        }
-
-        if (!flow_ok)
-        {
-            // 回退：LK 光流
-            cv::calcOpticalFlowPyrLK(mImGray, mLastImGray, vPtsCurr, vPtsPrev, status, err, cv::Size(21,21), 3);
-        }
-
-        const auto ydm_t_flow = std::chrono::steady_clock::now();
-        const double ydm_ms_flow = ydm_ms_since(ydm_t, ydm_t_flow);
-        ydm_t = ydm_t_flow;
-
-        // Forward-Backward 一致性检查
-        // - 若使用 FlowNet：默认不做 LK 的 FB（会把网络给出的对应关系错误“打回”），可选启用网络FB。
-        // - 若使用 LK：继续使用 LK 的 FB。
-        std::vector<cv::Point2f> vPtsCurrFB;
-        std::vector<uchar> statusFB;
-        std::vector<float> errFB;
-
-        if (flow_ok && use_flow_net)
-        {
-            if (flow_net_fb)
-            {
-                cv::Mat dense_back;
-                bool back_ok = false;
-                {
-                    std::lock_guard<std::mutex> lock(sFlowNetMutex);
-                    back_ok = sFlowNet && sFlowNet->IsLoaded();
-                    if (back_ok)
-                        back_ok = sFlowNet->InferFlow(mLastImGray, mImGray, dense_back);
-                }
-
-                if (back_ok && !dense_back.empty())
-                {
-                    vPtsCurrFB.resize(vPtsCurr.size());
-                    statusFB.assign(vPtsCurr.size(), 0);
-                    for (size_t i = 0; i < vPtsCurr.size(); ++i)
-                    {
-                        if (i >= status.size() || !status[i]) continue;
-                        const int x = cvRound(vPtsPrev[i].x);
-                        const int y = cvRound(vPtsPrev[i].y);
-                        if (x < 0 || x >= dense_back.cols || y < 0 || y >= dense_back.rows)
-                            continue;
-                        const cv::Vec2f f = dense_back.at<cv::Vec2f>(y, x);
-                        const float cx = vPtsPrev[i].x + f[0];
-                        const float cy = vPtsPrev[i].y + f[1];
-                        if (cx < 0.f || cx >= (float)mImGray.cols || cy < 0.f || cy >= (float)mImGray.rows)
-                            continue;
-                        vPtsCurrFB[i] = cv::Point2f(cx, cy);
-                        statusFB[i] = 1;
-                    }
-                }
-            }
-        }
-        else
-        {
-            // LK 路径：用 LK 做 FB 检查
-            if (!vPtsPrev.empty())
-                cv::calcOpticalFlowPyrLK(mLastImGray, mImGray, vPtsPrev, vPtsCurrFB, statusFB, errFB, cv::Size(21,21), 3);
-        }
-        
-        // 计算背景中位数 (仅使用 Mask 外的点)
-        std::vector<float> vFlowU, vFlowV;
-        std::vector<cv::Point2f> bg_prev, bg_curr;
-        bg_prev.reserve(mCurrentFrame.N);
-        bg_curr.reserve(mCurrentFrame.N);
-
-        for(int i=0; i<mCurrentFrame.N; i++) {
-            if(!status[i]) continue;
-            if(!statusFB.empty() && (!statusFB[i])) continue;
-            if(!vPtsCurrFB.empty())
-            {
-                const float fb_err = cv::norm(vPtsCurrFB[i] - vPtsCurr[i]);
-                if (fb_err > fb_th) continue;
-            }
-            int x = cvRound(vPtsCurr[i].x);
-            int y = cvRound(vPtsCurr[i].y);
-            // 简单判断不在原始 refined_mask 内
-            if(x >=0 && x<refined_mask.cols && y>=0 && y<refined_mask.rows) {
-                 if(refined_mask.at<uchar>(y,x) == 0) { 
-                     vFlowU.push_back(vPtsCurr[i].x - vPtsPrev[i].x);
-                     vFlowV.push_back(vPtsCurr[i].y - vPtsPrev[i].y);
-                     bg_prev.push_back(vPtsPrev[i]);
-                     bg_curr.push_back(vPtsCurr[i]);
-                 }
-            }
-        }
-        
-        // 先算平移中位数（用于回退）
-        if(vFlowU.size() > 10) {
-            std::sort(vFlowU.begin(), vFlowU.end());
-            std::sort(vFlowV.begin(), vFlowV.end());
-            median_u = vFlowU[vFlowU.size()/2];
-            median_v = vFlowV[vFlowV.size()/2];
-
-            // 再拟合更稳健的背景运动模型（仿射/部分仿射），用于减少旋转/视角变化导致的误判
-            cv::Mat aff;
-            std::vector<uchar> inliers;
-            if (bg_prev.size() >= 15)
-            {
-                try
-                {
-                    aff = cv::estimateAffinePartial2D(bg_prev, bg_curr, inliers, cv::RANSAC, ransac_reproj_th);
-                }
-                catch (...) {
-                    aff.release();
-                }
-            }
-
-            const auto ydm_t_aff = std::chrono::steady_clock::now();
-            const double ydm_ms_aff = ydm_ms_since(ydm_t, ydm_t_aff);
-            ydm_t = ydm_t_aff;
-
-            // 统计每个框的状态
-            // 规则（按你的需求）：如果“框内光流判为动态的特征点”超过 50%，
-            // 则认为该框整体为动态目标，mask 内所有点都应剔除；
-            // 否则（<=50% 且统计点数足够）将该框从 mask 中清除以保留静态点。
-            const float kMovingDiffTh = 2.5f; // 认为“显著运动”的阈值（相对背景中位数光流）
-            const int   kMinPtsPerBox = 20;   // 一个框至少要有这么多成功跟踪的点才允许做比例判定
+    // 使用 residual 阈值做“框内是否运动”的判定
+    const float kMovingResidualTh = (has_residual_cache && mCurrResidualThr > 1e-6f) ? mCurrResidualThr : 2.5f;
+    const int   kMinPtsPerBox = 20;
 
             // 可配置：光流动态比例阈值，默认 0.50
             // 用法：运行前设置环境变量 `YDM_FLOW_DYNAMIC_RATIO_TH=0.5`
@@ -4855,36 +5011,15 @@ void Tracking::VerifyAndPruneFeatures() {
                 if (kDynamicRatioTh > 1.0f) kDynamicRatioTh = 1.0f;
             }
 
-            for(int i=0; i<mCurrentFrame.N; i++) {
-                if(!status[i]) continue;
-                if(!statusFB.empty() && (!statusFB[i])) continue;
-                if(!vPtsCurrFB.empty())
-                {
-                    const float fb_err = cv::norm(vPtsCurrFB[i] - vPtsCurr[i]);
-                    if (fb_err > fb_th) continue;
-                }
-                
-                float diff = 0.0f;
-                if (!aff.empty())
-                {
-                    // residual = | Aff(prev) - curr |
-                    const double px = vPtsPrev[i].x;
-                    const double py = vPtsPrev[i].y;
-                    const double pred_x = aff.at<double>(0,0)*px + aff.at<double>(0,1)*py + aff.at<double>(0,2);
-                    const double pred_y = aff.at<double>(1,0)*px + aff.at<double>(1,1)*py + aff.at<double>(1,2);
-                    const double dx = pred_x - vPtsCurr[i].x;
-                    const double dy = pred_y - vPtsCurr[i].y;
-                    diff = (float)std::sqrt(dx*dx + dy*dy);
-                }
-                else
-                {
-                    // 回退：相对背景平移中位数
-                    const float u = vPtsCurr[i].x - vPtsPrev[i].x;
-                    const float v = vPtsCurr[i].y - vPtsPrev[i].y;
-                    const float diff_u = u - median_u;
-                    const float diff_v = v - median_v;
-                    diff = std::sqrt(diff_u*diff_u + diff_v*diff_v);
-                }
+    for(int i=0; i<mCurrentFrame.N; i++) {
+        if (!bCheckMotion) break;
+        const int x = cvRound(mCurrentFrame.mvKeysUn[i].pt.x);
+        const int y = cvRound(mCurrentFrame.mvKeysUn[i].pt.y);
+        if (x < 0 || y < 0 || x >= mCurrResidual.cols || y >= mCurrResidual.rows)
+            continue;
+        if (!mCurrResidualValidMask.at<uchar>(y, x))
+            continue;
+        const float diff = mCurrResidual.at<float>(y, x);
 
                 // 检查点属于哪个框
                 // mpORBextractorLeft->mvDynamicArea 是原始 YOLO 框
@@ -4892,7 +5027,7 @@ void Tracking::VerifyAndPruneFeatures() {
                     if(mpORBextractorLeft->mvDynamicArea[k].contains(mCurrentFrame.mvKeysUn[i].pt)) {
                         box_stats_map[k].total++;
                         box_stats_map[k].diffs.push_back(diff);
-                        if(diff > kMovingDiffTh) { // 运动阈值
+                        if(diff > kMovingResidualTh) {
                             box_stats_map[k].moving++;
                         }
                         // 一个点只归属第一个匹配的框 (简化)
@@ -4930,31 +5065,9 @@ void Tracking::VerifyAndPruneFeatures() {
                 }
             }
 
-            const auto ydm_t_box = std::chrono::steady_clock::now();
-            const double ydm_ms_box = ydm_ms_since(ydm_t, ydm_t_box);
-            ydm_t = ydm_t_box;
-
-            // If profiling, print summary periodically. (Avoid printing every frame.)
-            if (ydm_profile && (mCurrentFrame.mnId % ydm_profile_every) == 0)
-            {
-                const auto ydm_t_now = std::chrono::steady_clock::now();
-                const double ydm_ms_total = ydm_ms_since(ydm_t0_all, ydm_t_now);
-                const double fps = 1000.0 / ydm_ms_total;
-                std::cout << "[YDM] F=" << std::setw(4) << mCurrentFrame.mnId
-                          << " | Depth=" << std::setw(5) << std::fixed << std::setprecision(1) << ydm_ms_depth << "ms"
-                          << " YoloUnion=" << std::setw(5) << ydm_ms_yolo_union << "ms"
-                          << " Refined=" << std::setw(5) << ydm_ms_refined << "ms"
-                          << " Flow=" << std::setw(6) << ydm_ms_flow << "ms"
-                          << " Affine=" << std::setw(5) << ydm_ms_aff << "ms"
-                          << " Box=" << std::setw(5) << ydm_ms_box << "ms"
-                          << " || TOTAL=" << std::setw(6) << ydm_ms_total << "ms"
-                          << " FPS=" << std::setw(5) << std::setprecision(1) << fps << std::endl;
-            }
-
-        } else {
-            bCheckFlow = false;
-        }
-    }
+    const auto ydm_t_box = std::chrono::steady_clock::now();
+    const double ydm_ms_box = ydm_ms_since(ydm_t, ydm_t_box);
+    ydm_t = ydm_t_box;
 
 
     // 更新 Frame 中的 Mask，供后续建图使用 (此时 mask 已经被"平反"逻辑修正过)
@@ -5062,16 +5175,14 @@ void Tracking::VerifyAndPruneFeatures() {
             // - 因此：只要点仍在 refined_mask 内，一律剔除。
             if (in_mask) {
                 should_prune = true;
-            } else if(bCheckFlow && status[i]) {
-                float u = vPtsCurr[i].x - vPtsPrev[i].x;
-                float v = vPtsCurr[i].y - vPtsPrev[i].y;
-                float diff_u = u - median_u;
-                float diff_v = v - median_v;
-                diff = sqrt(diff_u*diff_u + diff_v*diff_v);
-
-                // Mask 外的点，仅剔除“显著运动”的点
-                if (diff > currentGeoThreshold) {
-                    should_prune = true;
+            } else if (bCheckMotion) {
+                if (x >= 0 && y >= 0 && x < mCurrResidual.cols && y < mCurrResidual.rows &&
+                    mCurrResidualValidMask.at<uchar>(y, x))
+                {
+                    diff = mCurrResidual.at<float>(y, x);
+                    // Mask 外的点，仅剔除“显著运动”的点
+                    if (diff > currentGeoThreshold)
+                        should_prune = true;
                 }
             }
 
@@ -5081,10 +5192,13 @@ void Tracking::VerifyAndPruneFeatures() {
                 
                 if(in_mask) nPrunedMask++;
                 else nPrunedGeom++; // Simplified stats
-            } else {
-                 mCurrentFrame.mvbOutlier[i] = false; // Ensure healthy points are marked false
-                 mCurrentFrame.mvKeys[i].class_id = 0;  // Reset visualization for kept points
-            }
+              } else {
+                  // 不要覆盖先前模块（如 DynamicObjectCleaner）已经标记的 outlier
+                  // 这里仅在当前未被标记时保持 false。
+                  if (!mCurrentFrame.mvbOutlier[i])
+                     mCurrentFrame.mvbOutlier[i] = false;
+                  // 同理，不强制重置 class_id
+              }
         }
         
         int nRemaining = mCurrentFrame.N - (nPrunedMask + nPrunedGeom);
@@ -5108,18 +5222,49 @@ void Tracking::VerifyAndPruneFeatures() {
         if(!bSafetyTriggered) break; // Finished first try successfully
     }
 
-    // Optional: include pruning + total time (printed periodically)
-    if (ydm_profile && (mCurrentFrame.mnId % ydm_profile_every) == 0)
+    // Windowed summary (averaged). Printed every N Verify calls.
+    const auto ydm_t_end = std::chrono::steady_clock::now();
+    const double ydm_ms_prune = ydm_ms_since(ydm_t, ydm_t_end);
+    const double ydm_ms_total = ydm_ms_since(ydm_t0_all, ydm_t_end);
+
+    ydm_verify_calls++;
+    ydm_window_calls++;
+    ydm_sum_depth_ms += ydm_ms_depth;
+    ydm_sum_yolo_union_ms += ydm_ms_yolo_union;
+    ydm_sum_refined_ms += ydm_ms_refined;
+    ydm_sum_box_ms += ydm_ms_box;
+    ydm_sum_mask_save_ms += ydm_ms_mask_save;
+    ydm_sum_prune_ms += ydm_ms_prune;
+    ydm_sum_total_ms += ydm_ms_total;
+
+    if (ydm_profile && ydm_window_calls >= ydm_profile_every)
     {
-        const auto ydm_t_end = std::chrono::steady_clock::now();
-        const double ydm_ms_prune = ydm_ms_since(ydm_t, ydm_t_end);
-        const double ydm_ms_total = ydm_ms_since(ydm_t0_all, ydm_t_end);
-        const double fps = 1000.0 / ydm_ms_total;
-        std::cout << "[YDM][FULL] Frame=" << std::setw(4) << mCurrentFrame.mnId
-                  << " | MaskSave=" << std::setw(5) << std::fixed << std::setprecision(1) << ydm_ms_mask_save << "ms"
-                  << " Prune=" << std::setw(5) << ydm_ms_prune << "ms"
-                  << " || TOTAL=" << std::setw(6) << ydm_ms_total << "ms"
-                  << " FPS=" << std::setw(5) << fps << std::endl;
+        const double n = static_cast<double>(ydm_window_calls);
+        const double avg_total = ydm_sum_total_ms / n;
+        const double fps = (avg_total > 1e-9) ? (1000.0 / avg_total) : 0.0;
+
+        std::cout << "[YDM][VERIFY] call=" << std::setw(6) << ydm_verify_calls
+                  << " every=" << ydm_profile_every
+                  << " count=" << ydm_window_calls
+                  << " lastF=" << std::setw(6) << mCurrentFrame.mnId
+                  << " | Depth=" << std::setw(6) << std::fixed << std::setprecision(2) << (ydm_sum_depth_ms / n) << "ms"
+                  << " YoloUnion=" << std::setw(6) << (ydm_sum_yolo_union_ms / n) << "ms"
+                  << " Refined=" << std::setw(6) << (ydm_sum_refined_ms / n) << "ms"
+                  << " Box=" << std::setw(6) << (ydm_sum_box_ms / n) << "ms"
+                  << " MaskSave=" << std::setw(6) << (ydm_sum_mask_save_ms / n) << "ms"
+                  << " Prune=" << std::setw(6) << (ydm_sum_prune_ms / n) << "ms"
+                  << " || TOTAL=" << std::setw(7) << avg_total << "ms"
+                  << " FPS=" << std::setw(6) << std::setprecision(2) << fps
+                  << std::endl;
+
+        ydm_window_calls = 0;
+        ydm_sum_depth_ms = 0.0;
+        ydm_sum_yolo_union_ms = 0.0;
+        ydm_sum_refined_ms = 0.0;
+        ydm_sum_box_ms = 0.0;
+        ydm_sum_mask_save_ms = 0.0;
+        ydm_sum_prune_ms = 0.0;
+        ydm_sum_total_ms = 0.0;
     }
 }
 
@@ -5373,4 +5518,3 @@ void Tracking::CheckFlowConsistency()
 }
 
 } // namespace ORB_SLAM3
-
