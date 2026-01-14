@@ -326,59 +326,135 @@ void Viewer::Run()
         else{
             toShow = im;
         }
-        // std:: cout <<"mImageViewerScale = "<<mImageViewerScale<<std::endl;
+        
         if(mImageViewerScale != 1.f)
         {
             int width = toShow.cols * mImageViewerScale;
             int height = toShow.rows * mImageViewerScale;
             cv::resize(toShow, toShow, cv::Size(width, height));
         }
-        // // resize mask to the same size as toShow if mask is not empty
-        // if (toShow.size() != mask.size()){
-        //     cv::resize(mask, mask, cv::Size(toShow.cols, toShow.rows));
-        // }
-        // std:: cout<<"toShow.size() = "<<toShow.size()<< " mask.size() = "<<mask.size()<<std::endl;
 
-        // Yolo
+        // Yolo detection visualization
         {
             std::unique_lock<std::mutex> lock(mMutexPAFinsh);
+            
+            // Draw detection bounding boxes
             for (auto vit = mmDetectMap.begin(); vit != mmDetectMap.end(); vit++)
             {
                 if (vit->second.size() != 0)
                 {
                     for (auto area : vit->second)
                     {
-                        cv::rectangle(toShow, area, cv::Scalar(0, 0, 255), 1);
+                        cv::rectangle(toShow, area, cv::Scalar(0, 0, 255), 2);
                         cv::putText(toShow,
                                     vit->first,
-                                    cv::Point(area.x, area.y),
-                                    cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 0, 0), 2);
+                                    cv::Point(area.x, area.y - 5),
+                                    cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 255), 2);
                     }
                 }
             }
             
-            // Mask processing under lock
+            // Optionally blend mask for visualization (semi-transparent overlay)
             if (!mask.empty())
             {
-                // Ensure mask size matches toShow
+                cv::Mat maskResized;
                 if (toShow.size() != mask.size()){
-                    cv::resize(mask, mask, cv::Size(toShow.cols, toShow.rows), 0, 0, cv::INTER_NEAREST);
+                    cv::resize(mask, maskResized, cv::Size(toShow.cols, toShow.rows), 0, 0, cv::INTER_NEAREST);
+                }
+                else {
+                    maskResized = mask;
                 }
                 
-                // Blend mask
-                if (mask.type() == toShow.type())
-                    cv::addWeighted(toShow, 0.7, mask, 0.3, 0, toShow);
-                else {
-                    // Handle type mismatch if necessary (e.g. mask is single channel?)
-                    // Usually mask from YOLO is CV_8UC3 if visualization ready?
-                    // Assuming types match or add conversion
-                     cv::addWeighted(toShow, 0.7, mask, 0.3, 0, toShow);
+                // Ensure compatible types for blending
+                if (maskResized.channels() == toShow.channels())
+                {
+                    // Create semi-transparent overlay (30% mask, 70% original)
+                    cv::addWeighted(toShow, 0.7, maskResized, 0.3, 0, toShow);
                 }
             }
         } // End lock
 
-        cv::imshow("YDM-SLAM: Current Frame",toShow);
+        // Display main RGB viewer window
+        cv::imshow("YDM-SLAM: Current Frame", toShow);
         cv::waitKey(mT);
+
+        // Debug windows for dynamic feature filtering (env: YDM_VIEW_DEBUG=1)
+        {
+            static bool ydm_view_debug_checked = false;
+            static bool ydm_view_debug_enabled = false;
+            if (!ydm_view_debug_checked)
+            {
+                ydm_view_debug_checked = true;
+                ydm_view_debug_enabled = (std::getenv("YDM_VIEW_DEBUG") && std::string(std::getenv("YDM_VIEW_DEBUG")) == "1");
+                if (ydm_view_debug_enabled)
+                {
+                    cv::namedWindow("YDM Debug: Five-Panel View", cv::WINDOW_NORMAL);
+                    std::cout << "[YDM_VIEW_DEBUG] Enabled: showing five-panel debug window (Raw YOLO / Refined / Residual / Motion Mask / Raw Flow)" << std::endl;
+                }
+            }
+
+            if (ydm_view_debug_enabled)
+            {
+                cv::Mat rawYolo, refined, residual, refinedMotion, rawFlow;
+                bool ready = false;
+                {
+                    std::unique_lock<std::mutex> lock(mMutexPAFinsh);
+                    if (mbDebugDataReady)
+                    {
+                        if (!mDebugRawYoloMask.empty()) rawYolo = mDebugRawYoloMask.clone();
+                        if (!mDebugRefinedMask.empty()) refined = mDebugRefinedMask.clone();
+                        if (!mDebugResidual.empty()) residual = mDebugResidual.clone();
+                        if (!mDebugRefinedMotionMask.empty()) refinedMotion = mDebugRefinedMotionMask.clone();
+                        if (!mDebugRawFlow.empty()) rawFlow = mDebugRawFlow.clone();
+                        ready = true;
+                    }
+                }
+                if (ready && !rawYolo.empty())
+                {
+                    // Create a 2x3 grid layout (5 panels + 1 blank)
+                    int h = rawYolo.rows;
+                    int w = rawYolo.cols;
+
+                    // Ensure all mats have same size
+                    cv::Mat p1 = rawYolo.clone();
+                    cv::Mat p2 = refined.empty() ? cv::Mat::zeros(h, w, CV_8UC3) : refined.clone();
+                    cv::Mat p3 = residual.empty() ? cv::Mat::zeros(h, w, CV_8UC3) : residual.clone();
+                    cv::Mat p4 = refinedMotion.empty() ? cv::Mat::zeros(h, w, CV_8UC3) : refinedMotion.clone();
+                    cv::Mat p5 = rawFlow.empty() ? cv::Mat::zeros(h, w, CV_8UC3) : rawFlow.clone();
+                    cv::Mat p6 = cv::Mat::zeros(h, w, CV_8UC3);  // Blank panel
+
+                    if (p2.size() != p1.size()) cv::resize(p2, p2, p1.size());
+                    if (p3.size() != p1.size()) cv::resize(p3, p3, p1.size());
+                    if (p4.size() != p1.size()) cv::resize(p4, p4, p1.size());
+                    if (p5.size() != p1.size()) cv::resize(p5, p5, p1.size());
+
+                    // Add labels to each panel
+                    cv::putText(p1, "Raw YOLO Mask", cv::Point(10, 30), 
+                               cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2);
+                    cv::putText(p2, "Refined Mask", cv::Point(10, 30), 
+                               cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2);
+                    cv::putText(p3, "Residual (Raw)", cv::Point(10, 30), 
+                               cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2);
+                    cv::putText(p4, "Refined Motion Mask", cv::Point(10, 30), 
+                               cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2);
+                    cv::putText(p5, "Raw Flow (Magnitude)", cv::Point(10, 30), 
+                               cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2);
+
+                    // Concatenate into 2x3 grid: [p1, p2, p3]
+                    //                            [p4, p5, p6]
+                    cv::Mat row1, row2;
+                    cv::hconcat(p1, p2, row1);
+                    cv::hconcat(row1, p3, row1);
+                    cv::hconcat(p4, p5, row2);
+                    cv::hconcat(row2, p6, row2);
+
+                    cv::Mat panel;
+                    cv::vconcat(row1, row2, panel);
+
+                    cv::imshow("YDM Debug: Five-Panel View", panel);
+                }
+            }
+        }
 
         if(menuReset)
         {

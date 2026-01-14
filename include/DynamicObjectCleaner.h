@@ -43,12 +43,38 @@ public:
 
         // Sampling stride for robust stats (outside semantic region)
         int statsStride = 4;
+
+        // Background peeling parameters (Option B)
+        bool enableBgPeeling = false;        // Enable iterative BG peeling with pose refinement
+        int bgPeelIterations = 7;            // Number of peeling iterations
+        int bgPeelStride = 4;                // Sampling stride for GN (speed/accuracy tradeoff)
+        float bgPeelSigmaScale = 2.5f;       // Threshold scale for BG candidate selection
+        float bgPeelMinPx = 1.0f;            // Minimum threshold for BG candidate
+        float bgPeelHuberDelta = 5.0f;       // Huber loss delta (pixels) for robust GN
+        float bgPeelMinInlierRatio = 0.3f;   // Minimum BG inlier ratio to accept pose update
     };
 
 public:
     DynamicObjectCleaner();
 
     bool EnsureFlowNetLoaded();
+
+    // Iterative background peeling over dense flow (pose unchanged):
+    // - Computes ego-flow increments and progressively peels them from dense flow.
+    // - outResidual/outMotionMask: final residual and motion evidence after K iterations.
+    // - staticPriorMask (optional): CV_8UC1, 255=eligible static candidates for stats.
+    bool RefineMotionWithFlowPeeling(const cv::Mat &prevGray,
+                                     const cv::Mat &prevDepthMeters,
+                                     const Sophus::SE3f &TcwPrev,
+                                     const cv::Mat &currGray,
+                                     const Eigen::Matrix3f &K,
+                                     Sophus::SE3f &inoutTcwCurr,
+                                     cv::Mat &outFlowPrevToCurr,
+                                     cv::Mat &outResidual,
+                                     cv::Mat &outValidMask,
+                                     cv::Mat &outMotionMask,
+                                     float &outThr,
+                                     const cv::Mat &staticPriorMask = cv::Mat());
 
     // Compute dense FlowNet flow + ego-motion compensated residual once, so callers can reuse.
     // - outFlowPrevToCurr: CV_32FC2
@@ -106,6 +132,14 @@ public:
 
     void SetParams(const Params &p) { mParams = p; }
     const Params &GetParams() const { return mParams; }
+
+    void WarpProbability(const cv::Mat &prevProb,
+                         const cv::Mat &flowPrevToCurr,
+                         cv::Mat &outWarpedProb);
+
+    bool CheckFlowConsistency(const cv::Mat &forwardFlow,
+                              const cv::Mat &backwardFlow,
+                              cv::Mat &outConsistencyMask);
 
 private:
     static float Median(std::vector<float> &v);

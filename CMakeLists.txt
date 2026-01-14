@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.2)
 project(ORB_SLAM3)
 
-option(YDM_WITH_ROS "Build native ROS1 publishing (roscpp)" OFF)
+option(YDM_WITH_ROS "Build native ROS1 publishing (roscpp)" ON)
 
 # Set the build type if not specified
 IF(NOT CMAKE_BUILD_TYPE)

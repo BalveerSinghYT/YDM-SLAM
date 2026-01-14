@@ -129,12 +129,12 @@ bool YoloDetection::Detect()
                     mInstanceIdMask(result[i].box).setTo(instanceId, result[i].boxMask);
                 }
 
-                // Dynamic-only outputs kept for existing pipeline
-                if (count(mvDynamicNames.begin(), mvDynamicNames.end(), cls))
+                // Include ALL detected objects (not just predefined dynamic classes)
+                // This allows downstream logic (DynamicObjectCleaner + VerifyAndPruneFeatures)
+                // to decide what is truly dynamic based on motion/depth evidence
+                if (result[i].box.area() > 0 && result[i].boxMask.rows && result[i].boxMask.cols > 0)
                 {
-                    if (result[i].box.area() > 0 && result[i].boxMask.rows && result[i].boxMask.cols > 0)
-                        objectMask(result[i].box).setTo(cv::Scalar(255, 255, 255), result[i].boxMask);
-
+                    objectMask(result[i].box).setTo(cv::Scalar(255, 255, 255), result[i].boxMask);
                     cv::Rect2i DynamicArea(left, top, (result[i].box.width), (result[i].box.height));
                     mvDynamicArea.push_back(DynamicArea);
                 }

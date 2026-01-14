@@ -70,6 +70,15 @@ public:
     map<string, vector<cv::Rect2i>> mmDetectMap;
     cv::Mat mask;
 
+    // Debug visualization for dynamic feature filtering (YDM_VIEW_DEBUG=1)
+    // Four-window display: Raw YOLO mask, Refined mask, Residual heatmap, Refined motion mask
+    cv::Mat mDebugRawYoloMask;       // Raw YOLO mask (BGR, pseudocolor)
+    cv::Mat mDebugRefinedMask;       // Refined mask after depth+flow correction (BGR, pseudocolor)
+    cv::Mat mDebugResidual;          // FlowNet residual heatmap (BGR, pseudocolor)
+    cv::Mat mDebugRefinedMotionMask; // Iteratively refined motion mask (BGR, pseudocolor)
+    cv::Mat mDebugRawFlow;           // Raw optical flow magnitude (BGR, pseudocolor)
+    bool mbDebugDataReady = false;
+    int mnDebugFrameId = 0;
 
     std::mutex mMutexPAFinsh;
 

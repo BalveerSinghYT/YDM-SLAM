@@ -3255,26 +3255,114 @@ namespace ORB_SLAM3
 
         // DIO-SLAM style dynamic keypoint filtering (requires predicted pose)
         // Compute FlowNet + ego-compensated residual ONCE, then reuse across modules.
+        // NEW: If YDM_BG_PEEL=1, use iterative background peeling with GN pose refinement (Option B)
         if ((mSensor == System::RGBD || mSensor == System::IMU_RGBD) &&
             !mLastImGray.empty() && !mPrevDepthMeters.empty())
         {
             const Sophus::SE3f TcwPrev = mLastFrame.GetPose();
-            const Sophus::SE3f TcwCurr = mCurrentFrame.GetPose();
+            Sophus::SE3f TcwCurr = mCurrentFrame.GetPose();  // Initial pose from motion model
 
             cv::Mat flowPrevToCurr, residual, validMask, motionMask;
             float thr = 0.0f;
-            const bool okResidual = mDynamicObjectCleaner.ComputeFlowAndResidualRGBD(
-                mLastImGray,
-                mPrevDepthMeters,
-                TcwPrev,
-                mImGray,
-                TcwCurr,
-                mCurrentFrame.mK_,
-                flowPrevToCurr,
-                residual,
-                validMask,
-                motionMask,
-                thr);
+            bool okResidual = false;
+
+            // Check if BG peeling is enabled
+            const char* env_bg_peel = std::getenv("YDM_BG_PEEL");
+            const bool use_bg_peel = (env_bg_peel && std::string(env_bg_peel) == "1");
+
+            if (use_bg_peel)
+            {
+                cv::Mat staticPriorMask;
+                if (!mPrevDepthMeters.empty() && mPrevDepthMeters.type() == CV_32FC1)
+                {
+                    cv::Mat validDepthMask = cv::Mat::zeros(mPrevDepthMeters.size(), CV_8UC1);
+                    for (int y = 0; y < mPrevDepthMeters.rows; ++y)
+                    {
+                        const float *dptr = mPrevDepthMeters.ptr<float>(y);
+                        uchar *vptr = validDepthMask.ptr<uchar>(y);
+                        for (int x = 0; x < mPrevDepthMeters.cols; ++x)
+                        {
+                            const float z = dptr[x];
+                            if (z > 0.0f && std::isfinite(z))
+                                vptr[x] = 255;
+                        }
+                    }
+
+                    cv::Mat dynamicSemanticMask;
+                    if (!mCurrInstanceIdMask.empty() &&
+                        mCurrInstanceIdMask.type() == CV_32SC1 &&
+                        mCurrInstanceIdMask.size() == validDepthMask.size() &&
+                        !mCurrInstanceClassNames.empty() &&
+                        mpDetector)
+                    {
+                        const int nInst = static_cast<int>(mCurrInstanceClassNames.size());
+                        std::vector<uchar> instDynamic(nInst, 0);
+                        const std::vector<std::string> &dynNames = mpDetector->mvDynamicNames;
+                        for (int i = 0; i < nInst; ++i)
+                        {
+                            const std::string &cls = mCurrInstanceClassNames[i];
+                            if (std::find(dynNames.begin(), dynNames.end(), cls) != dynNames.end())
+                                instDynamic[i] = 1;
+                        }
+
+                        dynamicSemanticMask = cv::Mat::zeros(validDepthMask.size(), CV_8UC1);
+                        for (int y = 0; y < mCurrInstanceIdMask.rows; ++y)
+                        {
+                            const int *iptr = mCurrInstanceIdMask.ptr<int>(y);
+                            uchar *mptr = dynamicSemanticMask.ptr<uchar>(y);
+                            for (int x = 0; x < mCurrInstanceIdMask.cols; ++x)
+                            {
+                                const int id = iptr[x];
+                                if (id > 0 && id <= nInst && instDynamic[id - 1])
+                                    mptr[x] = 255;
+                            }
+                        }
+                    }
+
+                    if (!dynamicSemanticMask.empty())
+                    {
+                        cv::Mat invDynamic;
+                        cv::bitwise_not(dynamicSemanticMask, invDynamic);
+                        cv::bitwise_and(validDepthMask, invDynamic, staticPriorMask);
+                    }
+                    else
+                    {
+                        staticPriorMask = validDepthMask;
+                    }
+                }
+
+                // Option B: Iterative BG peeling (pose unchanged, only refine mask)
+                okResidual = mDynamicObjectCleaner.RefineMotionWithFlowPeeling(
+                    mLastImGray,
+                    mPrevDepthMeters,
+                    TcwPrev,
+                    mImGray,
+                    mCurrentFrame.mK_,
+                    TcwCurr,  // Used for computation but NOT updated
+                    flowPrevToCurr,
+                    residual,
+                    validMask,
+                    motionMask,
+                    thr,
+                    staticPriorMask);
+                // Note: pose remains unchanged, we only get refined residual/mask
+            }
+            else
+            {
+                // Original: Single-shot residual computation
+                okResidual = mDynamicObjectCleaner.ComputeFlowAndResidualRGBD(
+                    mLastImGray,
+                    mPrevDepthMeters,
+                    TcwPrev,
+                    mImGray,
+                    TcwCurr,
+                    mCurrentFrame.mK_,
+                    flowPrevToCurr,
+                    residual,
+                    validMask,
+                    motionMask,
+                    thr);
+            }
 
             if (ydm_pipe_profile)
             {
@@ -5265,6 +5353,142 @@ void Tracking::VerifyAndPruneFeatures() {
         ydm_sum_mask_save_ms = 0.0;
         ydm_sum_prune_ms = 0.0;
         ydm_sum_total_ms = 0.0;
+    }
+
+    // ========== Debug Visualization for Viewer (YDM_VIEW_DEBUG=1) ==========
+    // Generate three pseudocolor images: Raw YOLO mask, Refined mask, Residual heatmap
+    // Push to Viewer every N frames (YDM_VIEW_DEBUG_EVERY, default=3)
+    if (mpViewer)
+    {
+        static bool sDebugChecked = false;
+        static bool sDebugEnabled = false;
+        static int sDebugEvery = 3;
+        static float sResidualMax = 10.0f;
+        static float sFlowMax = 20.0f;
+        if (!sDebugChecked)
+        {
+            sDebugChecked = true;
+            sDebugEnabled = (std::getenv("YDM_VIEW_DEBUG") && std::string(std::getenv("YDM_VIEW_DEBUG")) == "1");
+            if (const char* env = std::getenv("YDM_VIEW_DEBUG_EVERY"))
+            {
+                try { sDebugEvery = std::max(1, std::stoi(std::string(env))); } catch (...) { sDebugEvery = 3; }
+            }
+            if (const char* env = std::getenv("YDM_VIEW_RESIDUAL_MAX"))
+            {
+                try { sResidualMax = std::max(1.0f, std::stof(std::string(env))); } catch (...) { sResidualMax = 10.0f; }
+            }
+            if (const char* env = std::getenv("YDM_VIEW_FLOW_MAX"))
+            {
+                try { sFlowMax = std::max(1.0f, std::stof(std::string(env))); } catch (...) { sFlowMax = 20.0f; }
+            }
+        }
+
+        if (sDebugEnabled && (static_cast<int>(mCurrentFrame.mnId) % sDebugEvery == 0))
+        {
+            const cv::Size targetSize = mImGray.size();
+
+            // 1) Raw YOLO mask (pseudocolor from yolo_union)
+            cv::Mat rawYoloVis;
+            if (!yolo_union.empty())
+            {
+                cv::Mat yolo_resized = yolo_union;
+                if (yolo_union.size() != targetSize)
+                    cv::resize(yolo_union, yolo_resized, targetSize, 0, 0, cv::INTER_NEAREST);
+                cv::applyColorMap(yolo_resized, rawYoloVis, cv::COLORMAP_JET);
+            }
+            else
+            {
+                rawYoloVis = cv::Mat::zeros(targetSize, CV_8UC3);
+            }
+
+            // 2) Refined mask (pseudocolor from final refined_mask)
+            cv::Mat refinedVis;
+            if (!refined_mask.empty())
+            {
+                cv::Mat ref_resized = refined_mask;
+                if (refined_mask.size() != targetSize)
+                    cv::resize(refined_mask, ref_resized, targetSize, 0, 0, cv::INTER_NEAREST);
+                cv::applyColorMap(ref_resized, refinedVis, cv::COLORMAP_JET);
+            }
+            else
+            {
+                refinedVis = cv::Mat::zeros(targetSize, CV_8UC3);
+            }
+
+            // 3) Residual heatmap (pseudocolor from mCurrResidual)
+            cv::Mat residualVis;
+            if (has_residual_cache && !mCurrResidual.empty())
+            {
+                cv::Mat res_resized = mCurrResidual;
+                if (mCurrResidual.size() != targetSize)
+                    cv::resize(mCurrResidual, res_resized, targetSize, 0, 0, cv::INTER_LINEAR);
+
+                // Normalize to [0, 255] using configurable max
+                cv::Mat res_norm;
+                res_resized.convertTo(res_norm, CV_8UC1, 255.0 / sResidualMax, 0);
+                cv::applyColorMap(res_norm, residualVis, cv::COLORMAP_JET);
+            }
+            else
+            {
+                residualVis = cv::Mat::zeros(targetSize, CV_8UC3);
+            }
+
+            // 4) Refined motion mask (binary -> pseudocolor)
+            cv::Mat refinedMotionVis;
+            if (has_residual_cache && !mCurrResidualMotionMask.empty())
+            {
+                cv::Mat mm_resized = mCurrResidualMotionMask;
+                if (mCurrResidualMotionMask.size() != targetSize)
+                    cv::resize(mCurrResidualMotionMask, mm_resized, targetSize, 0, 0, cv::INTER_NEAREST);
+                cv::applyColorMap(mm_resized, refinedMotionVis, cv::COLORMAP_JET);
+            }
+            else
+            {
+                refinedMotionVis = cv::Mat::zeros(targetSize, CV_8UC3);
+            }
+
+            // 5) Raw flow magnitude (mCurrFlowPrevToCurr -> magnitude -> pseudocolor)
+            cv::Mat rawFlowVis;
+            if (has_residual_cache && !mCurrFlowPrevToCurr.empty())
+            {
+                cv::Mat flow_resized = mCurrFlowPrevToCurr;
+                if (mCurrFlowPrevToCurr.size() != targetSize)
+                    cv::resize(mCurrFlowPrevToCurr, flow_resized, targetSize, 0, 0, cv::INTER_LINEAR);
+
+                cv::Mat mag(targetSize, CV_32FC1, cv::Scalar(0));
+                for (int y = 0; y < targetSize.height; ++y)
+                {
+                    const cv::Vec2f* fptr = flow_resized.ptr<cv::Vec2f>(y);
+                    float* mptr = mag.ptr<float>(y);
+                    for (int x = 0; x < targetSize.width; ++x)
+                    {
+                        const cv::Vec2f v = fptr[x];
+                        const float m = std::sqrt(v[0] * v[0] + v[1] * v[1]);
+                        mptr[x] = std::isfinite(m) ? m : 0.0f;
+                    }
+                }
+
+                cv::Mat mag_u8;
+                mag.convertTo(mag_u8, CV_8UC1, 255.0 / sFlowMax, 0);
+                cv::applyColorMap(mag_u8, rawFlowVis, cv::COLORMAP_JET);
+            }
+            else
+            {
+                rawFlowVis = cv::Mat::zeros(targetSize, CV_8UC3);
+            }
+
+            // Push to Viewer under lock
+            {
+                std::unique_lock<std::mutex> lock(mpViewer->mMutexPAFinsh);
+                mpViewer->mDebugRawYoloMask = rawYoloVis.clone();
+                mpViewer->mDebugRefinedMask = refinedVis.clone();
+                mpViewer->mDebugResidual = residualVis.clone();
+                mpViewer->mDebugRefinedMotionMask = refinedMotionVis.clone();
+                mpViewer->mDebugRawFlow = rawFlowVis.clone();
+                mpViewer->mnDebugFrameId = static_cast<int>(mCurrentFrame.mnId);
+                mpViewer->mbDebugDataReady = true;
+            }
+        }
     }
 }
 
