@@ -20,7 +20,7 @@ YoloDetection::YoloDetection()
 {
     std::cout << "Loading Yolo model..." << std::endl;
 
-    std::string model_path_seg = "models/yolo11s-seg.onnx";
+    std::string model_path_seg = "models/best.onnx";
 
 	// loading model
     if (!gYoloSegModel)

@@ -308,14 +308,19 @@ bool FlowNetOnnx::InferFlow(const cv::Mat& img1, const cv::Mat& img2, cv::Mat& f
             // 2) centralize (subtract mean over both frames)
             CentralizeInPlace(f1, f2);
 
-            // 3) resize to multiples of div_size (default 64)
-            p1 = ResizeToMultiple(f1, div_size, resizedH, resizedW);
-            int resizedH2 = 0, resizedW2 = 0;
-            p2 = ResizeToMultiple(f2, div_size, resizedH2, resizedW2);
-            if (resizedH != resizedH2 || resizedW != resizedW2) return false;
+            // 3) PAD to multiples of div_size (default 64) - FIXED: use padding instead of resize
+            //    This preserves pixel geometry and keeps optical flow sharp
+            int padB1 = 0, padR1 = 0;
+            int padB2 = 0, padR2 = 0;
+            p1 = PadToMultiple(f1, div_size, padB1, padR1);
+            p2 = PadToMultiple(f2, div_size, padB2, padR2);
+            if (padB1 != padB2 || padR1 != padR2) return false;
 
-            H = resizedH;
-            W = resizedW;
+            padB = padB1;
+            padR = padR1;
+            H = p1.rows;
+            W = p1.cols;
+            
             NormalizeToNCHW_01_Bgr(p1, in1);
             NormalizeToNCHW_01_Bgr(p2, in2);
         }
@@ -439,35 +444,20 @@ bool FlowNetOnnx::InferFlow(const cv::Mat& img1, const cv::Mat& img2, cv::Mat& f
         if (use_fastflownet)
         {
             // FastFlowNet output is usually low-res (e.g., H/4 x W/4) and needs:
-            // 1) upsample to resized input size
+            // 1) upsample to padded input size
             // 2) multiply by div_flow
-            // 3) if resized, resize back to original and scale components
+            // 3) CROP back to original size (not resize - preserves geometry)
 
             cv::Mat flow_up;
             cv::resize(flowPadded, flow_up, cv::Size(W, H), 0, 0, cv::INTER_LINEAR);
             flow_up *= div_flow;
 
-            if (H != origH || W != origW)
-            {
-                const float sh = (float)origH / (float)H;
-                const float sw = (float)origW / (float)W;
-                cv::resize(flow_up, flow, cv::Size(origW, origH), 0, 0, cv::INTER_LINEAR);
-
-                // Scale flow components after resizing
-                for (int y = 0; y < flow.rows; ++y)
-                {
-                    cv::Vec2f* row = flow.ptr<cv::Vec2f>(y);
-                    for (int x = 0; x < flow.cols; ++x)
-                    {
-                        row[x][0] *= sw;
-                        row[x][1] *= sh;
-                    }
-                }
-            }
+            // Crop the padded region to get back to original size
+            cv::Rect roi(0, 0, origW, origH);
+            if (roi.width <= flow_up.cols && roi.height <= flow_up.rows)
+                flow = flow_up(roi).clone();
             else
-            {
-                flow = flow_up;
-            }
+                flow = flow_up.clone();
         }
         else
         {

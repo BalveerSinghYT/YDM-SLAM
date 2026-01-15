@@ -175,6 +175,11 @@ private:
 
     FlowNetOnnx mFlowNet;
     bool mFlowNetLoaded = false;
+    
+    // Temporal smoothing for optical flow (reduces flicker)
+    cv::Mat mPrevFlow;           // Previous frame's optical flow
+    cv::Mat mPrevGray;           // Previous frame's grayscale image
+    float mFlowSmoothAlpha = 0.3f;  // Exponential moving average: new_flow = alpha*curr + (1-alpha)*prev
 };
 
 } // namespace ORB_SLAM3

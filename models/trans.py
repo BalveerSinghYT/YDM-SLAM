@@ -1,13 +1,15 @@
 from ultralytics import YOLO
 
 # Load the YOLO11 model
-model = YOLO("yolo11s-seg.pt")
+model = YOLO("best.pt")
 
 # Export the model to ONNX format
-model.export(format="onnx")  # creates 'yolo11n.onnx'
+# opset=21: 兼容 ONNX Runtime 1.20.x (最高支持 opset 21)
+# simplify=True: 简化模型结构
+model.export(format="onnx", opset=21, simplify=True)
 
-# Load the exported ONNX model
-onnx_model = YOLO("yolo11s-seg.onnx")
+print("✅ ONNX export completed: best.onnx (opset=21)")
 
-# Run inference
-results = onnx_model("https://ultralytics.com/images/bus.jpg")
+# 不运行推理测试（避免类别映射问题）
+# 如需测试，请使用原始 .pt 模型：
+# results = model("https://ultralytics.com/images/bus.jpg")

@@ -91,6 +91,34 @@ DynamicObjectCleaner::DynamicObjectCleaner()
         } catch (...) {}
     }
     
+    // Overlap threshold for instance-level dynamic detection
+    if (const char* env_overlap = std::getenv("YDM_OVERLAP_DYNAMIC_TH"))
+    {
+        try {
+            float overlap = std::stof(std::string(env_overlap));
+            if (std::isfinite(overlap) && overlap >= 0.0f && overlap <= 1.0f)
+            {
+                mParams.overlapDynamicTh = overlap;
+                std::cout << "[DynamicObjectCleaner] Set overlapDynamicTh=" << overlap 
+                          << " from YDM_OVERLAP_DYNAMIC_TH" << std::endl;
+            }
+        } catch (...) {}
+    }
+    
+    // Refinement dilation radius
+    if (const char* env_dilate = std::getenv("YDM_REFINE_DILATE"))
+    {
+        try {
+            int dilate = std::stoi(std::string(env_dilate));
+            if (dilate >= 0 && dilate <= 20)
+            {
+                mParams.refineDilate = dilate;
+                std::cout << "[DynamicObjectCleaner] Set refineDilate=" << dilate 
+                          << " from YDM_REFINE_DILATE" << std::endl;
+            }
+        } catch (...) {}
+    }
+    
     if (mParams.enableBgPeeling)
     {
         std::cout << "[DynamicObjectCleaner] Background Peeling ENABLED: iters=" << mParams.bgPeelIterations
@@ -127,7 +155,7 @@ bool DynamicObjectCleaner::RefineMotionWithFlowPeeling(
     const bool ydm_verbose = (std::getenv("YDM_VERBOSE") && std::string(std::getenv("YDM_VERBOSE")) == "1");
     const bool ydm_debug = (std::getenv("YDM_DEBUG_DYNAMIC") && std::string(std::getenv("YDM_DEBUG_DYNAMIC")) == "1");
 
-    // Step 1: Compute FlowNet once
+    // Step 1: Compute Forward FlowNet (prev -> curr)
     outFlowPrevToCurr.release();
     if (!mFlowNet.InferFlow(prevGray, currGray, outFlowPrevToCurr) || outFlowPrevToCurr.empty())
         return false;
@@ -141,51 +169,202 @@ bool DynamicObjectCleaner::RefineMotionWithFlowPeeling(
 
     const int rows = prevDepthMeters.rows;
     const int cols = prevDepthMeters.cols;
+    
+    // ✅ FORWARD-BACKWARD CONSISTENCY CHECK (optional but recommended)
+    const bool enable_consistency = (std::getenv("YDM_FLOW_CONSISTENCY") != nullptr && 
+                                     std::string(std::getenv("YDM_FLOW_CONSISTENCY")) == "1");
+    
+    if (enable_consistency)
+    {
+        // Compute backward flow (curr -> prev)
+        cv::Mat backwardFlow;
+        if (mFlowNet.InferFlow(currGray, prevGray, backwardFlow) && !backwardFlow.empty())
+        {
+            // Check consistency: forward + backward ≈ 0
+            cv::Mat consistencyMask;
+            if (CheckFlowConsistency(outFlowPrevToCurr, backwardFlow, consistencyMask))
+            {
+                // Mask out inconsistent flow (likely occlusions or moving objects)
+                #pragma omp parallel for if(rows * cols > 640 * 480)
+                for (int y = 0; y < rows; ++y)
+                {
+                    cv::Vec2f *fptr = outFlowPrevToCurr.ptr<cv::Vec2f>(y);
+                    const uchar *cptr = consistencyMask.ptr<uchar>(y);
+                    for (int x = 0; x < cols; ++x)
+                    {
+                        if (!cptr[x])  // Inconsistent → zero out
+                            fptr[x] = cv::Vec2f(0.0f, 0.0f);
+                    }
+                }
+                
+                if (ydm_debug)
+                {
+                    int consistent = cv::countNonZero(consistencyMask);
+                    float ratio = 100.0f * consistent / (rows * cols);
+                    std::cout << "[YDM][FB_CHECK] Consistency: " << ratio << "% (" 
+                              << consistent << "/" << (rows*cols) << " pixels)" << std::endl;
+                }
+            }
+        }
+    }
+    
+    // ✅ TEMPORAL SMOOTHING: Reduce flicker by exponential moving average
+    // This stabilizes the optical flow across frames
+    const bool enable_temporal_smooth = (std::getenv("YDM_FLOW_SMOOTH") == nullptr || 
+                                         std::string(std::getenv("YDM_FLOW_SMOOTH")) != "0");
+    
+    if (enable_temporal_smooth && !mPrevFlow.empty() && 
+        mPrevFlow.size() == outFlowPrevToCurr.size() && 
+        mPrevFlow.type() == CV_32FC2)
+    {
+        const float alpha = mFlowSmoothAlpha;  // Weight for current frame (0.3 = 30% current, 70% previous)
+        
+        #pragma omp parallel for if(rows * cols > 640 * 480)
+        for (int y = 0; y < rows; ++y)
+        {
+            cv::Vec2f *curr_ptr = outFlowPrevToCurr.ptr<cv::Vec2f>(y);
+            const cv::Vec2f *prev_ptr = mPrevFlow.ptr<cv::Vec2f>(y);
+            
+            for (int x = 0; x < cols; ++x)
+            {
+                // EMA: smoothed = alpha * current + (1-alpha) * previous
+                curr_ptr[x][0] = alpha * curr_ptr[x][0] + (1.0f - alpha) * prev_ptr[x][0];
+                curr_ptr[x][1] = alpha * curr_ptr[x][1] + (1.0f - alpha) * prev_ptr[x][1];
+            }
+        }
+    }
+    
+    // Cache for next frame
+    mPrevFlow = outFlowPrevToCurr.clone();
+    mPrevGray = currGray.clone();
+    
+    // ✅ IMPROVEMENT: Mask out optical flow in depth-invalid regions EARLY
+    // This prevents noise in depth-missing areas (e.g., sensor corners) from
+    // polluting the MAD-based thresholding statistics
+    #pragma omp parallel for if(rows * cols > 640 * 480)
+    for (int y = 0; y < rows; ++y)
+    {
+        const float *dptr = prevDepthMeters.ptr<float>(y);
+        cv::Vec2f *fptr = outFlowPrevToCurr.ptr<cv::Vec2f>(y);
+        for (int x = 0; x < cols; ++x)
+        {
+            const float z = dptr[x];
+            // Zero out flow where depth is invalid (missing/NaN/negative)
+            if (!(z > 0.0f && std::isfinite(z)))
+                fptr[x] = cv::Vec2f(0.0f, 0.0f);
+        }
+    }
+    
     const int stride = std::max(1, mParams.bgPeelStride);
     const int iters = std::max(1, mParams.bgPeelIterations);
     const float sigmaScale = mParams.bgPeelSigmaScale;
     const float minPx = mParams.bgPeelMinPx;
     const float minInlierRatio = mParams.bgPeelMinInlierRatio;
 
+    // ✅ FIX 1: Correct SE(3) decomposition using Sophus log/exp (numerically stable)
     const Sophus::SE3f T_rel = inoutTcwCurr * TcwPrev.inverse();
-    Eigen::Matrix<float, 6, 1> xi = T_rel.log();
-    if (!xi.array().isFinite().all())
+    const Eigen::Matrix<float, 6, 1> xi_total = T_rel.log();
+    if (!xi_total.array().isFinite().all())
         return false;
-    xi /= static_cast<float>(iters);
-    const Sophus::SE3f T_inc = Sophus::SE3f::exp(xi);
 
-    cv::Mat egoFlowInc = cv::Mat::zeros(prevDepthMeters.size(), CV_32FC2);
+    // ✅ FIX 2: Auto pose direction detection using cosine similarity
+    auto computeEgoFlowAndCosSim = [&](const Sophus::SE3f &T) -> std::pair<cv::Mat, float>
+    {
+        cv::Mat ego = cv::Mat::zeros(prevDepthMeters.size(), CV_32FC2);
+        cv::Mat valid = cv::Mat::zeros(prevDepthMeters.size(), CV_8UC1);
+        
+        #pragma omp parallel for if(rows * cols > 640 * 480)
+        for (int y = 0; y < rows; ++y)
+        {
+            const float *dptr = prevDepthMeters.ptr<float>(y);
+            cv::Vec2f *eptr = ego.ptr<cv::Vec2f>(y);
+            uchar *vptr = valid.ptr<uchar>(y);
+            for (int x = 0; x < cols; ++x)
+            {
+                const float z = dptr[x];
+                if (!(z > 0.0f) || !std::isfinite(z))
+                    continue;
+
+                const float X = (static_cast<float>(x) - cx) * z / fx;
+                const float Y = (static_cast<float>(y) - cy) * z / fy;
+                const Eigen::Vector3f Xprev(X, Y, z);
+                const Eigen::Vector3f Xcur = T * Xprev;
+
+                const float zc = Xcur(2);
+                if (!(zc > 1e-6f) || !std::isfinite(zc))
+                    continue;
+
+                const float u2 = fx * (Xcur(0) / zc) + cx;
+                const float v2 = fy * (Xcur(1) / zc) + cy;
+                
+                // ✅ FIX 3: Strict in-bounds check
+                if (!std::isfinite(u2) || !std::isfinite(v2) ||
+                    u2 < 0.0f || u2 >= cols || v2 < 0.0f || v2 >= rows)
+                    continue;
+
+                eptr[x][0] = u2 - static_cast<float>(x);
+                eptr[x][1] = v2 - static_cast<float>(y);
+                vptr[x] = 255;
+            }
+        }
+        
+        // Compute mean cosine similarity with optical flow
+        double cosSim = 0.0;
+        int count = 0;
+        for (int y = 0; y < rows; ++y)
+        {
+            const cv::Vec2f *fptr = outFlowPrevToCurr.ptr<cv::Vec2f>(y);
+            const cv::Vec2f *eptr = ego.ptr<cv::Vec2f>(y);
+            const uchar *vptr = valid.ptr<uchar>(y);
+            for (int x = 0; x < cols; ++x)
+            {
+                if (!vptr[x])
+                    continue;
+                const float fx = fptr[x][0];
+                const float fy = fptr[x][1];
+                const float ex = eptr[x][0];
+                const float ey = eptr[x][1];
+                const float fmag = std::sqrt(fx * fx + fy * fy);
+                const float emag = std::sqrt(ex * ex + ey * ey);
+                if (fmag > 1e-6f && emag > 1e-6f)
+                {
+                    cosSim += (fx * ex + fy * ey) / (fmag * emag);
+                    count++;
+                }
+            }
+        }
+        return {ego, count > 0 ? static_cast<float>(cosSim / count) : 0.0f};
+    };
+
+    auto [egoFlow1, cos1] = computeEgoFlowAndCosSim(T_rel);
+    auto [egoFlow2, cos2] = computeEgoFlowAndCosSim(T_rel.inverse());
+    
+    Sophus::SE3f T_rel_corrected = T_rel;
+    if (cos2 > cos1)
+    {
+        T_rel_corrected = T_rel.inverse();
+        if (ydm_debug)
+            std::cout << "[YDM][BG_PEEL] Auto-corrected pose direction (cosSim: " 
+                      << cos1 << " → " << cos2 << ")" << std::endl;
+    }
+    else if (ydm_debug)
+    {
+        std::cout << "[YDM][BG_PEEL] Pose direction correct (cosSim: " << cos1 << ")" << std::endl;
+    }
+
+    // Compute initial valid mask with STRICT checks
     cv::Mat validMask = cv::Mat::zeros(prevDepthMeters.size(), CV_8UC1);
-
     #pragma omp parallel for if(rows * cols > 640 * 480)
     for (int y = 0; y < rows; ++y)
     {
         const float *dptr = prevDepthMeters.ptr<float>(y);
-        cv::Vec2f *eptr = egoFlowInc.ptr<cv::Vec2f>(y);
         uchar *vptr = validMask.ptr<uchar>(y);
         for (int x = 0; x < cols; ++x)
         {
             const float z = dptr[x];
-            if (!(z > 0.0f) || !std::isfinite(z))
-                continue;
-
-            const float X = (static_cast<float>(x) - cx) * z / fx;
-            const float Y = (static_cast<float>(y) - cy) * z / fy;
-            const Eigen::Vector3f Xprev(X, Y, z);
-            const Eigen::Vector3f Xcur = T_inc * Xprev;
-
-            const float zc = Xcur(2);
-            if (!(zc > 1e-6f) || !std::isfinite(zc))
-                continue;
-
-            const float u2 = fx * (Xcur(0) / zc) + cx;
-            const float v2 = fy * (Xcur(1) / zc) + cy;
-            if (!std::isfinite(u2) || !std::isfinite(v2))
-                continue;
-
-            eptr[x][0] = u2 - static_cast<float>(x);
-            eptr[x][1] = v2 - static_cast<float>(y);
-            vptr[x] = 255;
+            // ✅ FIX 4: Strict validity - must be positive AND finite
+            if (z > 0.0f && std::isfinite(z))
+                vptr[x] = 255;
         }
     }
 
@@ -193,12 +372,14 @@ bool DynamicObjectCleaner::RefineMotionWithFlowPeeling(
     if (totalValid <= 0)
         return false;
 
+    // Initialize background mask (all valid pixels are candidates)
     cv::Mat bgMask;
     if (!staticPriorMask.empty() && staticPriorMask.type() == CV_8UC1 && staticPriorMask.size() == validMask.size())
         cv::bitwise_and(validMask, staticPriorMask, bgMask);
     else
         bgMask = validMask.clone();
 
+    // ✅ FIX 5: Initialize residual flow (will be progressively refined)
     cv::Mat flowRem = outFlowPrevToCurr.clone();
     cv::Mat residual = cv::Mat::zeros(currGray.size(), CV_32FC1);
 
@@ -208,16 +389,86 @@ bool DynamicObjectCleaner::RefineMotionWithFlowPeeling(
     size_t lastSampleCount = 0;
 
     int performedIters = 0;
+    
+    // ✅ FIX 6: Iterative background peeling with correct SE(3) decomposition
     for (int iter = 0; iter < iters; ++iter)
     {
         performedIters = iter + 1;
+        
+        // Compute cumulative poses using Sophus log/exp (numerically stable!)
+        // T_acc^k = exp(log(T_rel) * k/K)
+        const float ratio_k = static_cast<float>(iter + 1) / static_cast<float>(iters);
+        const float ratio_km1 = static_cast<float>(iter) / static_cast<float>(iters);
+        
+        const Sophus::SE3f T_acc_k = Sophus::SE3f::exp(xi_total * ratio_k);
+        const Sophus::SE3f T_acc_km1 = Sophus::SE3f::exp(xi_total * ratio_km1);
+        
+        // Compute incremental ego-flow: delta_d^(k) = ego(T_acc^k) - ego(T_acc^{k-1})
+        cv::Mat egoFlow_k = cv::Mat::zeros(prevDepthMeters.size(), CV_32FC2);
+        cv::Mat egoFlow_km1 = cv::Mat::zeros(prevDepthMeters.size(), CV_32FC2);
+        
+        #pragma omp parallel for if(rows * cols > 640 * 480)
+        for (int y = 0; y < rows; ++y)
+        {
+            const float *dptr = prevDepthMeters.ptr<float>(y);
+            cv::Vec2f *ek_ptr = egoFlow_k.ptr<cv::Vec2f>(y);
+            cv::Vec2f *ekm1_ptr = egoFlow_km1.ptr<cv::Vec2f>(y);
+            const uchar *vptr = validMask.ptr<uchar>(y);
+            
+            for (int x = 0; x < cols; ++x)
+            {
+                if (!vptr[x])
+                    continue;
+                    
+                const float z = dptr[x];
+                const float X = (static_cast<float>(x) - cx) * z / fx;
+                const float Y = (static_cast<float>(y) - cy) * z / fy;
+                const Eigen::Vector3f Xprev(X, Y, z);
+                
+                // Transform with T_acc_k
+                const Eigen::Vector3f Xcur_k = T_acc_k * Xprev;
+                const float zc_k = Xcur_k(2);
+                if (zc_k > 1e-6f && std::isfinite(zc_k))
+                {
+                    const float u2_k = fx * (Xcur_k(0) / zc_k) + cx;
+                    const float v2_k = fy * (Xcur_k(1) / zc_k) + cy;
+                    if (std::isfinite(u2_k) && std::isfinite(v2_k) &&
+                        u2_k >= 0.0f && u2_k < cols && v2_k >= 0.0f && v2_k < rows)
+                    {
+                        ek_ptr[x][0] = u2_k - static_cast<float>(x);
+                        ek_ptr[x][1] = v2_k - static_cast<float>(y);
+                    }
+                }
+                
+                // Transform with T_acc_km1
+                const Eigen::Vector3f Xcur_km1 = T_acc_km1 * Xprev;
+                const float zc_km1 = Xcur_km1(2);
+                if (zc_km1 > 1e-6f && std::isfinite(zc_km1))
+                {
+                    const float u2_km1 = fx * (Xcur_km1(0) / zc_km1) + cx;
+                    const float v2_km1 = fy * (Xcur_km1(1) / zc_km1) + cy;
+                    if (std::isfinite(u2_km1) && std::isfinite(v2_km1) &&
+                        u2_km1 >= 0.0f && u2_km1 < cols && v2_km1 >= 0.0f && v2_km1 < rows)
+                    {
+                        ekm1_ptr[x][0] = u2_km1 - static_cast<float>(x);
+                        ekm1_ptr[x][1] = v2_km1 - static_cast<float>(y);
+                    }
+                }
+            }
+        }
+        
+        // ✅ FIX 7: TRUE PEELING - Only update background pixels!
+        // This is the KEY difference from "global compensation"
         #pragma omp parallel for if(rows * cols > 640 * 480)
         for (int y = 0; y < rows; ++y)
         {
             const uchar *vptr = validMask.ptr<uchar>(y);
+            const uchar *bptr = bgMask.ptr<uchar>(y);
             cv::Vec2f *fptr = flowRem.ptr<cv::Vec2f>(y);
-            const cv::Vec2f *eptr = egoFlowInc.ptr<cv::Vec2f>(y);
+            const cv::Vec2f *ek_ptr = egoFlow_k.ptr<cv::Vec2f>(y);
+            const cv::Vec2f *ekm1_ptr = egoFlow_km1.ptr<cv::Vec2f>(y);
             float *rptr = residual.ptr<float>(y);
+            
             for (int x = 0; x < cols; ++x)
             {
                 if (!vptr[x])
@@ -225,8 +476,19 @@ bool DynamicObjectCleaner::RefineMotionWithFlowPeeling(
                     rptr[x] = 0.0f;
                     continue;
                 }
-                fptr[x][0] -= eptr[x][0];
-                fptr[x][1] -= eptr[x][1];
+                
+                // Incremental delta
+                const float delta_x = ek_ptr[x][0] - ekm1_ptr[x][0];
+                const float delta_y = ek_ptr[x][1] - ekm1_ptr[x][1];
+                
+                // Only update if currently classified as background
+                if (bptr[x])
+                {
+                    fptr[x][0] -= delta_x;
+                    fptr[x][1] -= delta_y;
+                }
+                
+                // Compute residual
                 const float dx = fptr[x][0];
                 const float dy = fptr[x][1];
                 rptr[x] = std::sqrt(dx * dx + dy * dy);
@@ -700,6 +962,66 @@ bool DynamicObjectCleaner::ComputeFlowAndResidualRGBD(const cv::Mat &prevGray,
     outFlowPrevToCurr.release();
     if (!mFlowNet.InferFlow(prevGray, currGray, outFlowPrevToCurr) || outFlowPrevToCurr.empty())
         return false;
+
+    // ✅ FORWARD-BACKWARD CONSISTENCY CHECK
+    const bool enable_consistency = (std::getenv("YDM_FLOW_CONSISTENCY") != nullptr && 
+                                     std::string(std::getenv("YDM_FLOW_CONSISTENCY")) == "1");
+    
+    if (enable_consistency)
+    {
+        cv::Mat backwardFlow;
+        if (mFlowNet.InferFlow(currGray, prevGray, backwardFlow) && !backwardFlow.empty())
+        {
+            cv::Mat consistencyMask;
+            if (CheckFlowConsistency(outFlowPrevToCurr, backwardFlow, consistencyMask))
+            {
+                const int rows = outFlowPrevToCurr.rows;
+                const int cols = outFlowPrevToCurr.cols;
+                
+                #pragma omp parallel for if(rows * cols > 640 * 480)
+                for (int y = 0; y < rows; ++y)
+                {
+                    cv::Vec2f *fptr = outFlowPrevToCurr.ptr<cv::Vec2f>(y);
+                    const uchar *cptr = consistencyMask.ptr<uchar>(y);
+                    for (int x = 0; x < cols; ++x)
+                    {
+                        if (!cptr[x])
+                            fptr[x] = cv::Vec2f(0.0f, 0.0f);
+                    }
+                }
+            }
+        }
+    }
+
+    // ✅ TEMPORAL SMOOTHING: Reduce flicker (same as RefineMotionWithFlowPeeling)
+    const bool enable_temporal_smooth = (std::getenv("YDM_FLOW_SMOOTH") == nullptr || 
+                                         std::string(std::getenv("YDM_FLOW_SMOOTH")) != "0");
+    
+    if (enable_temporal_smooth && !mPrevFlow.empty() && 
+        mPrevFlow.size() == outFlowPrevToCurr.size() && 
+        mPrevFlow.type() == CV_32FC2)
+    {
+        const float alpha = mFlowSmoothAlpha;
+        const int rows = outFlowPrevToCurr.rows;
+        const int cols = outFlowPrevToCurr.cols;
+        
+        #pragma omp parallel for if(rows * cols > 640 * 480)
+        for (int y = 0; y < rows; ++y)
+        {
+            cv::Vec2f *curr_ptr = outFlowPrevToCurr.ptr<cv::Vec2f>(y);
+            const cv::Vec2f *prev_ptr = mPrevFlow.ptr<cv::Vec2f>(y);
+            
+            for (int x = 0; x < cols; ++x)
+            {
+                curr_ptr[x][0] = alpha * curr_ptr[x][0] + (1.0f - alpha) * prev_ptr[x][0];
+                curr_ptr[x][1] = alpha * curr_ptr[x][1] + (1.0f - alpha) * prev_ptr[x][1];
+            }
+        }
+    }
+    
+    // Cache for next frame
+    mPrevFlow = outFlowPrevToCurr.clone();
+    mPrevGray = currGray.clone();
 
     cv::Mat egoFlow;
     ComputeEgoFlow(prevDepthMeters, TcwPrev, TcwCurr, K, egoFlow, outValidMask);

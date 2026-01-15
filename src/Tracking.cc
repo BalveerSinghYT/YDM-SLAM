@@ -3272,6 +3272,7 @@ namespace ORB_SLAM3
 
             if (use_bg_peel)
             {
+                // ✅ Phase 1: Pure optical flow - staticPriorMask ONLY from valid depth, NO YOLO influence
                 cv::Mat staticPriorMask;
                 if (!mPrevDepthMeters.empty() && mPrevDepthMeters.type() == CV_32FC1)
                 {
@@ -3288,47 +3289,9 @@ namespace ORB_SLAM3
                         }
                     }
 
-                    cv::Mat dynamicSemanticMask;
-                    if (!mCurrInstanceIdMask.empty() &&
-                        mCurrInstanceIdMask.type() == CV_32SC1 &&
-                        mCurrInstanceIdMask.size() == validDepthMask.size() &&
-                        !mCurrInstanceClassNames.empty() &&
-                        mpDetector)
-                    {
-                        const int nInst = static_cast<int>(mCurrInstanceClassNames.size());
-                        std::vector<uchar> instDynamic(nInst, 0);
-                        const std::vector<std::string> &dynNames = mpDetector->mvDynamicNames;
-                        for (int i = 0; i < nInst; ++i)
-                        {
-                            const std::string &cls = mCurrInstanceClassNames[i];
-                            if (std::find(dynNames.begin(), dynNames.end(), cls) != dynNames.end())
-                                instDynamic[i] = 1;
-                        }
-
-                        dynamicSemanticMask = cv::Mat::zeros(validDepthMask.size(), CV_8UC1);
-                        for (int y = 0; y < mCurrInstanceIdMask.rows; ++y)
-                        {
-                            const int *iptr = mCurrInstanceIdMask.ptr<int>(y);
-                            uchar *mptr = dynamicSemanticMask.ptr<uchar>(y);
-                            for (int x = 0; x < mCurrInstanceIdMask.cols; ++x)
-                            {
-                                const int id = iptr[x];
-                                if (id > 0 && id <= nInst && instDynamic[id - 1])
-                                    mptr[x] = 255;
-                            }
-                        }
-                    }
-
-                    if (!dynamicSemanticMask.empty())
-                    {
-                        cv::Mat invDynamic;
-                        cv::bitwise_not(dynamicSemanticMask, invDynamic);
-                        cv::bitwise_and(validDepthMask, invDynamic, staticPriorMask);
-                    }
-                    else
-                    {
-                        staticPriorMask = validDepthMask;
-                    }
+                    // ✅ REMOVED: dynamicSemanticMask construction that polluted MAD statistics
+                    // Now staticPriorMask is pure depth-based, independent of YOLO detection
+                    staticPriorMask = validDepthMask;
                 }
 
                 // Option B: Iterative BG peeling (pose unchanged, only refine mask)
@@ -3373,6 +3336,10 @@ namespace ORB_SLAM3
 
             if (okResidual)
             {
+                // ✅ Phase 1 Complete: Pure optical flow motionMask obtained (no YOLO influence)
+                //    - motionMask is computed from MAD threshold on residual
+                //    - staticPriorMask only used valid depth, avoiding YOLO pollution
+                //    - This ensures static/slow-moving people can be detected by flow alone
                 mCurrFlowPrevToCurr = flowPrevToCurr;
                 mCurrResidual = residual;
                 mCurrResidualValidMask = validMask;
@@ -3380,7 +3347,11 @@ namespace ORB_SLAM3
                 mCurrResidualThr = thr;
                 mCurrResidualFrameId = mCurrentFrame.mnId;
 
-                // If we have instance segmentation, produce refined semantic+motion mask and outliers.
+                // ✅ Phase 2: Fusion with YOLO instance segmentation
+                //    - CleanRGBDFromPrecomputed fuses pure flow motionMask with YOLO semantic info
+                //    - Non-rigid classes (person) always marked dynamic regardless of flow
+                //    - Rigid instances marked dynamic if overlap ratio > threshold
+                //    - Final refinedMask = nonRigidMask | dynamicRigidMask
                 if (!mCurrInstanceIdMask.empty() && mCurrInstanceIdMask.type() == CV_32SC1)
                 {
                     std::vector<bool> outFlags;
@@ -4945,7 +4916,6 @@ void Tracking::VerifyAndPruneFeatures() {
     // - YDM_PROFILE=0: disable per-stage timing logs (enabled by default)
     // - YDM_PROFILE_EVERY=N: print every N frames (default 1)
     // - YDM_VERBOSE=1: enable verbose logs
-    // - YDM_FLOW_BOX_LOG=1: print per-box flow decisions (can be very slow)
     const char *env_profile = std::getenv("YDM_PROFILE");
     const bool ydm_profile = !(env_profile && std::string(env_profile) == "0");
     int ydm_profile_every = 1;
@@ -4955,7 +4925,6 @@ void Tracking::VerifyAndPruneFeatures() {
         if (ydm_profile_every < 1) ydm_profile_every = 1;
     }
     const bool ydm_verbose = (std::getenv("YDM_VERBOSE") && std::string(std::getenv("YDM_VERBOSE")) == "1");
-    const bool ydm_flow_box_log = (std::getenv("YDM_FLOW_BOX_LOG") && std::string(std::getenv("YDM_FLOW_BOX_LOG")) == "1");
 
     const auto ydm_t0_all = std::chrono::steady_clock::now();
     auto ydm_t = ydm_t0_all;
@@ -4986,7 +4955,7 @@ void Tracking::VerifyAndPruneFeatures() {
                                     mCurrResidualFrameId == mCurrentFrame.mnId);
 
     // 重要：mImDepth 在 GrabImageRGBD() 里保存的是原始深度图（常见为 CV_16U），
-    // 但 GetRefinedDynamicMask() 按 CV_32F(米) 读取深度并做阈值切割。
+    // 这里的深度修正按 CV_32F(米) 读取深度并做阈值切割。
     // 如果不先转换，会导致 depths 为空/median 深度异常，refined_mask 结果全黑。
     cv::Mat depth_for_mask = mImDepth;
     if ((fabs(mDepthMapFactor - 1.0f) > 1e-5) || depth_for_mask.type() != CV_32F)
@@ -4996,169 +4965,115 @@ void Tracking::VerifyAndPruneFeatures() {
     const double ydm_ms_depth = ydm_ms_since(ydm_t, ydm_t_depth);
     ydm_t = ydm_t_depth;
 
-    // Step A0: 以 YOLO 分割 mask 作为“保底动态区域”
-    // 说明：仅用 box 内深度中位数切割可能会选到背景深度（尤其当box里背景像素占比更大），
-    // 从而把真正的动态物体漏掉。这里先把 YOLO mask 做并集，后续再结合深度 refined。
-    cv::Mat yolo_union = cv::Mat::zeros(depth_for_mask.size(), CV_8UC1);
-    if (!mpORBextractorLeft->mvDynamicMask.empty())
+    // Step A0: 准备 YOLO mask（单通道、尺寸对齐）
+    cv::Mat yolo_mask;
+    if (!mpORBextractorLeft->mvDynamicMask.empty() && !mpORBextractorLeft->mvDynamicMask[0].empty())
     {
-        for (const cv::Mat &m : mpORBextractorLeft->mvDynamicMask)
-        {
-            if (m.empty())
-                continue;
-
-            cv::Mat m1;
-            if (m.channels() == 1)
-                m1 = m;
-            else
-                cv::cvtColor(m, m1, cv::COLOR_BGR2GRAY);
-
-            if (m1.type() != CV_8UC1)
-                m1.convertTo(m1, CV_8UC1);
-
-            if (m1.size() != yolo_union.size())
-            {
-                cv::Mat resized;
-                cv::resize(m1, resized, yolo_union.size(), 0, 0, cv::INTER_NEAREST);
-                m1 = resized;
-            }
-
-            cv::bitwise_or(yolo_union, m1, yolo_union);
-        }
+        yolo_mask = mpORBextractorLeft->mvDynamicMask[0];
+        if (yolo_mask.channels() != 1)
+            cv::cvtColor(yolo_mask, yolo_mask, cv::COLOR_BGR2GRAY);
+        if (yolo_mask.type() != CV_8UC1)
+            yolo_mask.convertTo(yolo_mask, CV_8UC1);
+        if (yolo_mask.size() != depth_for_mask.size())
+            cv::resize(yolo_mask, yolo_mask, depth_for_mask.size(), 0, 0, cv::INTER_NEAREST);
     }
 
     const auto ydm_t_yolo_union = std::chrono::steady_clock::now();
     const double ydm_ms_yolo_union = ydm_ms_since(ydm_t, ydm_t_yolo_union);
     ydm_t = ydm_t_yolo_union;
 
-    // Step A: 生成基于深度的精准 Mask
-    // 注意：我们需要将 cv::Rect2f 转换为 cv::Rect 才能传递给 GetRefinedDynamicMask
-    // 或者直接修改 GetRefinedDynamicMask 接受 vector<Rect2i>
-    // 这里我们做个简单的适配
-    std::vector<cv::Rect> vRects;
-    for(const auto& r : mpORBextractorLeft->mvDynamicArea) {
-        vRects.push_back(r);
-    }
+    // Step A: 用“深度修正后的 YOLO mask”与 refined motion mask 做重叠判定
+    // 规则：每个 YOLO 框内的 mask 与 motion mask 重叠比例 > 0.60，才认为该框为动态并保留。
+    const bool has_motion_mask = has_residual_cache && !mCurrResidualMotionMask.empty() &&
+                                 mCurrResidualMotionMask.type() == CV_8UC1 &&
+                                 mCurrResidualMotionMask.size() == depth_for_mask.size();
+    const bool bCheckMotion = has_residual_cache;
 
-    cv::Mat depth_refined_mask = GetRefinedDynamicMask(depth_for_mask, vRects);
+    const float kOverlapRatioTh = 0.60f;
+    const float kDepthMin = 0.1f;
+    const float kDepthMax = 15.0f;
+    const float kDepthTolerance = 0.5f;
+
+    cv::Mat refined_mask = cv::Mat::zeros(depth_for_mask.size(), CV_8UC1);
+    if (has_motion_mask && !yolo_mask.empty())
+    {
+        for (size_t k = 0; k < mpORBextractorLeft->mvDynamicArea.size(); ++k)
+        {
+            cv::Rect safe = mpORBextractorLeft->mvDynamicArea[k] &
+                            cv::Rect(0, 0, depth_for_mask.cols, depth_for_mask.rows);
+            if (safe.area() <= 0)
+                continue;
+
+            cv::Mat mask_roi = yolo_mask(safe);
+            if (cv::countNonZero(mask_roi) == 0)
+                continue;
+
+            cv::Mat depth_roi = depth_for_mask(safe);
+            std::vector<float> depths;
+            depths.reserve(static_cast<size_t>(cv::countNonZero(mask_roi)));
+            for (int y = 0; y < depth_roi.rows; ++y)
+            {
+                const float *dptr = depth_roi.ptr<float>(y);
+                const uchar *mptr = mask_roi.ptr<uchar>(y);
+                for (int x = 0; x < depth_roi.cols; ++x)
+                {
+                    if (!mptr[x])
+                        continue;
+                    const float d = dptr[x];
+                    if (d > kDepthMin && d < kDepthMax && std::isfinite(d))
+                        depths.push_back(d);
+                }
+            }
+            if (depths.empty())
+                continue;
+
+            const size_t n = depths.size() / 2;
+            std::nth_element(depths.begin(), depths.begin() + n, depths.end());
+            const float median_d = depths[n];
+
+            cv::Mat depth_refined_roi = cv::Mat::zeros(safe.size(), CV_8UC1);
+            for (int y = 0; y < depth_roi.rows; ++y)
+            {
+                const float *dptr = depth_roi.ptr<float>(y);
+                const uchar *mptr = mask_roi.ptr<uchar>(y);
+                uchar *optr = depth_refined_roi.ptr<uchar>(y);
+                for (int x = 0; x < depth_roi.cols; ++x)
+                {
+                    if (!mptr[x])
+                        continue;
+                    if (std::abs(dptr[x] - median_d) < kDepthTolerance)
+                        optr[x] = 255;
+                }
+            }
+
+            const int mask_area = cv::countNonZero(depth_refined_roi);
+            if (mask_area <= 0)
+                continue;
+
+            cv::Mat motion_roi = mCurrResidualMotionMask(safe);
+            cv::Mat overlap;
+            cv::bitwise_and(depth_refined_roi, motion_roi, overlap);
+            const float ratio = static_cast<float>(cv::countNonZero(overlap)) / static_cast<float>(mask_area);
+            if (ratio > kOverlapRatioTh)
+            {
+                cv::Mat dst = refined_mask(safe);
+                cv::bitwise_or(dst, depth_refined_roi, dst);
+            }
+        }
+    }
 
     const auto ydm_t_refined = std::chrono::steady_clock::now();
     const double ydm_ms_refined = ydm_ms_since(ydm_t, ydm_t_refined);
     ydm_t = ydm_t_refined;
 
-    // 组合 mask：优先保留已有的 refined mask（例如 DynamicObjectCleaner 已经写入 mCurrentFrame.mvDynamicMask），
-    // 再与深度 refined + YOLO union 做并集，避免丢弃任意一路的动态判断。
-    cv::Mat refined_mask = cv::Mat::zeros(depth_for_mask.size(), CV_8UC1);
-    if (!mCurrentFrame.mvDynamicMask.empty() && !mCurrentFrame.mvDynamicMask[0].empty())
-    {
-        cv::Mat m0 = mCurrentFrame.mvDynamicMask[0];
-        if (m0.size() != refined_mask.size())
-            cv::resize(m0, m0, refined_mask.size(), 0, 0, cv::INTER_NEAREST);
-        if (m0.type() != CV_8UC1)
-            m0.convertTo(m0, CV_8UC1);
-        refined_mask = m0.clone();
-    }
-    cv::bitwise_or(refined_mask, depth_refined_mask, refined_mask);
-    if (!yolo_union.empty())
-        cv::bitwise_or(refined_mask, yolo_union, refined_mask);
-
     cv::Mat refined_mask_1 = refined_mask;
-    // Step B: 预处理 - 基于光流判断每个 YOLO 框的动静状态
-    // 我们统计每个框内的特征点，看有多少比例是"显著运动"的 (diff > 2.5)
-    // 如果大部分是静止的，说明这个框（例如坐着的人）是静态物体，我们需要将其从 Mask 中移除，
-    // 以便在 PCD 建图中保留，并在 Tracking 中保留特征点。
-
-    struct BoxStats {
-        int total = 0;
-        int moving = 0;
-        std::vector<float> diffs;
-    };
-    std::map<int, BoxStats> box_stats_map; // Index in mvDynamicArea -> Stats
-
-    // 准备运动证据：默认使用 residual cache（FlowNet + ego compensation）
-    const bool bCheckMotion = has_residual_cache;
-
-    // 使用 residual 阈值做“框内是否运动”的判定
-    const float kMovingResidualTh = (has_residual_cache && mCurrResidualThr > 1e-6f) ? mCurrResidualThr : 2.5f;
-    const int   kMinPtsPerBox = 20;
-
-            // 可配置：光流动态比例阈值，默认 0.50
-            // 用法：运行前设置环境变量 `YDM_FLOW_DYNAMIC_RATIO_TH=0.5`
-            float kDynamicRatioTh = 0.50f;
-            if (const char *env_ratio = std::getenv("YDM_FLOW_DYNAMIC_RATIO_TH"))
-            {
-                try
-                {
-                    kDynamicRatioTh = std::stof(std::string(env_ratio));
-                }
-                catch (...)
-                {
-                    kDynamicRatioTh = 0.50f;
-                }
-                if (kDynamicRatioTh < 0.0f) kDynamicRatioTh = 0.0f;
-                if (kDynamicRatioTh > 1.0f) kDynamicRatioTh = 1.0f;
-            }
-
-    for(int i=0; i<mCurrentFrame.N; i++) {
-        if (!bCheckMotion) break;
-        const int x = cvRound(mCurrentFrame.mvKeysUn[i].pt.x);
-        const int y = cvRound(mCurrentFrame.mvKeysUn[i].pt.y);
-        if (x < 0 || y < 0 || x >= mCurrResidual.cols || y >= mCurrResidual.rows)
-            continue;
-        if (!mCurrResidualValidMask.at<uchar>(y, x))
-            continue;
-        const float diff = mCurrResidual.at<float>(y, x);
-
-                // 检查点属于哪个框
-                // mpORBextractorLeft->mvDynamicArea 是原始 YOLO 框
-                for(size_t k=0; k < mpORBextractorLeft->mvDynamicArea.size(); k++) {
-                    if(mpORBextractorLeft->mvDynamicArea[k].contains(mCurrentFrame.mvKeysUn[i].pt)) {
-                        box_stats_map[k].total++;
-                        box_stats_map[k].diffs.push_back(diff);
-                        if(diff > kMovingResidualTh) {
-                            box_stats_map[k].moving++;
-                        }
-                        // 一个点只归属第一个匹配的框 (简化)
-                        break;
-                    }
-                }
-            }
-
-            // 根据统计结果更新 Mask
-            // - ratio > 0.5: 保留该框为动态（mask 不清除），后续 mask 内点全部剔除
-            // - ratio <= 0.5: 认为该框整体偏静态，清除该框区域的 mask（保留点/点云）
-            for(std::map<int, BoxStats>::const_iterator it = box_stats_map.begin(); it != box_stats_map.end(); ++it) {
-                const int k = it->first;
-                const BoxStats &stats = it->second;
-                if(stats.total < kMinPtsPerBox) {
-                    continue; // 证据不足：默认不清mask（更保守）
-                }
-
-                const float ratio = (float)stats.moving / (float)stats.total;
-                if(ratio <= kDynamicRatioTh) {
-                    if (ydm_flow_box_log || ydm_verbose)
-                        std::cout << "Reverting Box (static by flow): Box " << k
-                                  << " (Moving: " << stats.moving << "/" << stats.total
-                                  << " Ratio: " << ratio << ")" << std::endl;
-
-                    cv::Rect safe = mpORBextractorLeft->mvDynamicArea[k] & cv::Rect(0, 0, refined_mask.cols, refined_mask.rows);
-                    if(safe.area() > 0) {
-                        refined_mask(safe).setTo(0);
-                    }
-                } else {
-                    if (ydm_flow_box_log || ydm_verbose)
-                        std::cout << "Keeping Box (dynamic by flow): Box " << k
-                                  << " (Moving: " << stats.moving << "/" << stats.total
-                                  << " Ratio: " << ratio << ")" << std::endl;
-                }
-            }
 
     const auto ydm_t_box = std::chrono::steady_clock::now();
     const double ydm_ms_box = ydm_ms_since(ydm_t, ydm_t_box);
     ydm_t = ydm_t_box;
 
 
-    // 更新 Frame 中的 Mask，供后续建图使用 (此时 mask 已经被"平反"逻辑修正过)
+    // 更新 Frame 中的 Mask，供后续建图使用 (此时 mask 已经过重叠筛选)
     mCurrentFrame.mvDynamicMask.clear();
     mCurrentFrame.mvDynamicMask.push_back(refined_mask);
 
@@ -5257,10 +5172,9 @@ void Tracking::VerifyAndPruneFeatures() {
             bool should_prune = false;
             float diff = 0.0f;
 
-            // 策略修正：
-            // - 光流只用于“平反整框”(Step B)，不要用于在 mask 内逐点放行。
-            //   否则动态物体在某些帧里会因为 diff 小（例如与相机运动接近/光流抖动/跟踪失败）而被保留。
-            // - 因此：只要点仍在 refined_mask 内，一律剔除。
+            // 策略：
+            // - refined_mask 内点一律剔除（已通过 motion mask 重叠筛选）
+            // - refined_mask 外的点，仅剔除“显著运动”的点
             if (in_mask) {
                 should_prune = true;
             } else if (bCheckMotion) {
@@ -5387,13 +5301,13 @@ void Tracking::VerifyAndPruneFeatures() {
         {
             const cv::Size targetSize = mImGray.size();
 
-            // 1) Raw YOLO mask (pseudocolor from yolo_union)
+            // 1) Raw YOLO mask (pseudocolor from yolo_mask)
             cv::Mat rawYoloVis;
-            if (!yolo_union.empty())
+            if (!yolo_mask.empty())
             {
-                cv::Mat yolo_resized = yolo_union;
-                if (yolo_union.size() != targetSize)
-                    cv::resize(yolo_union, yolo_resized, targetSize, 0, 0, cv::INTER_NEAREST);
+                cv::Mat yolo_resized = yolo_mask;
+                if (yolo_mask.size() != targetSize)
+                    cv::resize(yolo_mask, yolo_resized, targetSize, 0, 0, cv::INTER_NEAREST);
                 cv::applyColorMap(yolo_resized, rawYoloVis, cv::COLORMAP_JET);
             }
             else
